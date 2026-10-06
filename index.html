@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Conciliação diária · Pagil Serrana</title>
+<title>Conciliação diária · Correa Auto Peças</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
@@ -160,7 +160,7 @@ body.mododia .top-in .period,body.mododia #quick,body.mododia header .btn.primar
 .dayhead .sp{flex:1}
 .daynav{display:flex;gap:4px;align-items:center}
 .daynav input{border:1px solid var(--line);background:var(--surface);height:36px;border-radius:8px;padding:0 8px}
-.steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.steps{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
 .step{display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px}
 .step .ck{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-weight:800;background:var(--amber-soft);color:var(--amber);flex:none}
 .step.done .ck{background:var(--green-soft);color:var(--green)}
@@ -212,7 +212,7 @@ body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,b
 <body>
 <header class="top">
   <div class="top-in">
-    <div class="brand"><i aria-hidden="true"></i>Conciliação diária <small>Pagil Serrana</small></div>
+    <div class="brand"><i aria-hidden="true"></i>Conciliação diária <small>Correa Auto Peças</small></div>
     <div class="period" role="group" aria-label="Período">
       <input type="date" id="pDe" aria-label="Data inicial"><span class="statusline">até</span><input type="date" id="pAte" aria-label="Data final">
     </div>
@@ -243,6 +243,12 @@ function hashStr(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCode
 const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
 const sum=(a,f=x=>x.valor)=>a.reduce((s,x)=>s+(f(x)||0),0);
 function toast(m,ms=4500){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms);}
+
+/* ============ dados da empresa ============ */
+const EMPRESA={nome:'Correa Auto Peças',razao:'CORREA AUTO PECAS E SUPRIMENTOS LTDA',cnpj:'66.032.600/0001-40',
+  contas:[{banco:'Sicoob',desc:'Sicoob Credirochas · coop. 3260-3 · conta 229.559-8'},{banco:'Bradesco',desc:'Bradesco · ag. 2986 · conta 0003714-1'}]};
+// crédito vindo da própria Correa (transferência entre as contas Sicoob ⇄ Bradesco) não é venda
+const contaPropria=e=>{ const t=norm(e.desc+' '+e.pagador); return /CORREA AUTO PECAS|0?66\.?032\.?600/.test(t); };
 
 /* ============ leitura de valores e datas ============ */
 function parseValor(v){
@@ -338,9 +344,9 @@ const gkey=(col,x)=>col==='receber'?x.venc:x.date;
 // Coleções: entradas / vendas / receber — um documento por dia ({date, items}).
 // Ajustes manuais (trocas de forma e conciliações): documento ajustes/manual, gravado campo a campo.
 // Tudo sincroniza em tempo real entre aparelhos e funciona offline (grava quando a internet voltar).
-function lerCfgFB(){ if(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey) return window.FIREBASE_CONFIG; try{ return JSON.parse(localStorage.getItem('conc:fbcfg')||'null'); }catch(e){ return null; } }
+function lerCfgFB(){ if(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey) return window.FIREBASE_CONFIG; try{ return JSON.parse(localStorage.getItem('corr:fbcfg')||'null'); }catch(e){ return null; } }
 let FBCFG=lerCfgFB(), db=null, usuario=null;
-const MODO_TESTE=()=>localStorage.getItem('conc:teste')==='1';
+const MODO_TESTE=()=>localStorage.getItem('corr:teste')==='1';
 const USA_FB=()=>!!db;
 const unsubs=[];
 const Store={mode:'local', inicial:null,
@@ -355,12 +361,12 @@ const Store={mode:'local', inicial:null,
   },
   async loadAll(col){
     if(db) return (this.inicial&&this.inicial.dados[col])||[];
-    const out=[]; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith(`conc:${col}:`)){ const v=JSON.parse(localStorage.getItem(k)); if(v&&v.items) out.push(...v.items);} } }catch(e){}
+    const out=[]; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith(`corr:${col}:`)){ const v=JSON.parse(localStorage.getItem(k)); if(v&&v.items) out.push(...v.items);} } }catch(e){}
     return out; },
   async putLote(lote){
     const limpo=x=>{ const o={}; for(const k in x) if(k[0]!=='_') o[k]=x[k]; return JSON.parse(JSON.stringify(o)); };
     const docs=lote.map(({col,key})=>({col,key,items:D[col].filter(x=>gkey(col,x)===key).map(limpo)}));
-    if(!db){ try{ docs.forEach(({col,key,items})=>{ if(items.length) localStorage.setItem(`conc:${col}:${key}`,JSON.stringify({date:key,items})); else localStorage.removeItem(`conc:${col}:${key}`); }); return true; }catch(e){ Sync.err='armazenamento cheio'; return false; } }
+    if(!db){ try{ docs.forEach(({col,key,items})=>{ if(items.length) localStorage.setItem(`corr:${col}:${key}`,JSON.stringify({date:key,items})); else localStorage.removeItem(`corr:${col}:${key}`); }); return true; }catch(e){ Sync.err='armazenamento cheio'; return false; } }
     try{
       for(let i=0;i<docs.length;i+=400){ const b=db.batch();
         docs.slice(i,i+400).forEach(({col,key,items})=>{ const ref=db.collection(col).doc(key); if(items.length) b.set(ref,{date:key,items,atualizado:firebase.firestore.FieldValue.serverTimestamp(),por:usuario?usuario.email:''}); else b.delete(ref); });
@@ -394,7 +400,7 @@ async function gravarAjuste(campo,id,valor){
   AJ[campo][id]=valor; const pk=campo+':'+id; pendAJ.add(pk); Sync.state='pend'; syncUI();
   let ok=false, erro='';
   if(db){ try{ await db.doc('ajustes/manual').set({[campo]:{[id]:JSON.parse(JSON.stringify(valor))}},{merge:true}); ok=true; }catch(e){ erro=traduzErro(e); } }
-  else { try{ localStorage.setItem('conc:ajustes',JSON.stringify(AJ)); ok=true; }catch(e){ erro='armazenamento local indisponível'; } }
+  else { try{ localStorage.setItem('corr:ajustes',JSON.stringify(AJ)); ok=true; }catch(e){ erro='armazenamento local indisponível'; } }
   if(ok&&AJ[campo][id]===valor) pendAJ.delete(pk);
   Sync.state=ok?(pendAJ.size||Object.values(dirty).some(x=>x.size)?'pend':'ok'):'err'; Sync.err=ok?'':erro; syncUI();
   if(!ok) toast(`Não foi possível salvar (${erro}). Toque em "tentar de novo" no topo.`,8000);
@@ -403,7 +409,7 @@ async function gravarAjuste(campo,id,valor){
 async function enviarAjustes(){ for(const k of [...pendAJ]){ const [c,id]=k.split(':'); await gravarAjuste(c,id,AJ[c][id]); } }
 async function carregarAjustes(){
   if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
-  try{ const d=JSON.parse(localStorage.getItem('conc:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
+  try{ const d=JSON.parse(localStorage.getItem('corr:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
 }
 function salvarConc(e){ return gravarAjuste('conc',e.id,{st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}); }
 const dirty={}; let saveTimer=null, flushing=null, flushAgain=false;
@@ -519,6 +525,7 @@ function candidatos(e,LI,livres=true){
   return out;
 }
 function conciliarAuto(){
+  D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&contaPropria(e)){ e.st='out'; e.links=[]; e.auto=true; e.motivo='Transferência entre contas da Correa'; touch('entradas',e); } });
   const pend=D.entradas.filter(e=>e.st!=='ok'&&e.st!=='out'&&!e.manual);
   pend.forEach(e=>{ e.st='ni'; e.links=[]; e.motivo=''; });
   let LI=linkIndex(); const usados=new Set(Object.keys(LI));
@@ -608,7 +615,7 @@ const ORIG={venda:'Vendas',titulo:'Títulos pagos',parcial:'Pagos parcial',serv:
 function origemEntrada(e){ if(e.st==='serv') return 'serv'; const xs=(e.links||[]).map(i=>IDX[i]).filter(Boolean); if(!xs.length) return 'semvinc';
   if(xs.some(x=>x.col==='receber'&&x.parcial)) return 'parcial'; if(xs.some(x=>x.col==='receber')) return 'titulo'; return 'venda'; }
 function origemReceber(r,LI){ if(r.parcial) return 'parcial'; if(r.baixado||(LI[r.id]&&LI[r.id].st==='ok')) return 'titulo'; return 'aberto'; }
-function linhaEntrada(e){ return {orig:origemEntrada(e),cliente:clienteDaEntrada(e),sub:e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc,valor:e.valor,data:e.date,
+function linhaEntrada(e){ return {orig:origemEntrada(e),cliente:clienteDaEntrada(e),sub:(e.banco||'Sicoob')+' · '+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc),valor:e.valor,data:e.date,
   doc:(e.links||[]).map(refDe).join(', ')||'—',st:e.st,act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e}; }
 function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
   act:(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')?`data-act="alvo" data-id="${v.id}"`:'',forma:v.forma,
@@ -653,7 +660,7 @@ function render(){
 const card=(cls,q,t,v,s,act)=>`<button class="card ${cls}" ${act}><span class="q">${q}</span><span class="t">${t}</span><span class="v">${v}</span><span class="s">${s}</span></button>`;
 function vPainel(C){
   const vazio=!D.entradas.length&&!D.vendas.length&&!D.receber.length;
-  if(vazio) return `<h1 class="page">Comece pelos PDFs</h1><p class="lede">Solte o extrato Sicoob, o Listar Pedido por Data e o Contas a Receber. A conciliação roda sozinha logo depois.</p>`+vImportar().split('<section class="block">')[0].replace(/<h1[\s\S]*?<\/p>/,'');
+  if(vazio) return `<h1 class="page">Comece pelos PDFs</h1><p class="lede">Solte o extrato Sicoob e/ou Bradesco, o Listar Pedido por Data e o Contas a Receber. A conciliação roda sozinha logo depois.</p>`+vImportar().split('<section class="block">')[0].replace(/<h1[\s\S]*?<\/p>/,'');
   const pOk=C.tEntradas?Math.round(100*sum(C.ok)/C.tEntradas):0;
   const periodo=S.de===S.ate?br(S.de):`${br(S.de)} a ${br(S.ate)}`;
   const cards=`<div class="cards">
@@ -699,11 +706,13 @@ function tabela(rows,opt={}){
 function chips(name,opts,cur){ return `<div class="chips">${opts.map(([k,l])=>`<button data-act="filtro" data-n="${name}" data-v="${k}" aria-pressed="${cur===k}">${l}</button>`).join('')}</div>`; }
 function vBanco(C){
   const f=S.filtro.banco||'todos'; const q=norm(S.filtro.bq||'');
-  let es=C.entradas.slice(); if(f!=='todos') es=es.filter(e=>e.st===f);
+  const bf=S.filtro.bb||'todos';
+  let es=C.entradas.slice(); if(f!=='todos') es=es.filter(e=>e.st===f); if(bf!=='todos') es=es.filter(e=>(e.banco||'Sicoob')===bf);
   if(q) es=es.filter(e=>norm(clienteDaEntrada(e)+' '+e.desc+' '+e.pagador+' '+money(e.valor)).includes(q));
   es.sort((a,b)=>a.date.localeCompare(b.date)||b.valor-a.valor);
-  return `<h1 class="page">Entradas no banco</h1><p class="lede">Só os créditos do extrato Sicoob (saídas, pagamentos e tarifas são ignorados). Toque numa entrada para conferir ou escolher manualmente a venda ou o título.</p>
+  return `<h1 class="page">Entradas no banco</h1><p class="lede">Só os créditos dos extratos Sicoob e Bradesco (saídas, pagamentos e tarifas são ignorados). Toque numa entrada para conferir ou escolher manualmente a venda ou o título.</p>
     <div class="toolbar">${chips('banco',[['todos',`Todas (${C.entradas.length})`],['ok',`🟢 Conciliados (${C.ok.length})`],['conf',`🟡 Conferir (${C.conf.length})`],['ni',`🔴 Não identificados (${C.ni.length})`],['out',`Outras (${C.out.length})`]],f)}
+      ${chips('bb',[['todos','Todos os bancos'],...EMPRESA.contas.map(c=>[c.banco,`${c.banco} · ${money(sum(C.entradas.filter(e=>(e.banco||'Sicoob')===c.banco&&e.st!=='out')))}`])],bf)}
       <span class="sp"></span><input class="search" id="bq" placeholder="Buscar cliente, pagador ou valor" value="${esc(S.filtro.bq||'')}"><button class="btn" data-act="auto">Conciliar automaticamente</button></div>
     ${tabela(es.map(linhaEntrada),{fid:'banco'})}`;
 }
@@ -840,7 +849,7 @@ function desenhaConc(){ S.dlgKind='cc';
   const dlg=$('#dlg'); dlg.className='';
   dlg.innerHTML=`<div class="dlg-h"><div><h3>Conferir entrada de ${money(e.valor)}</h3><p>${esc(e.desc)}</p></div><div>${stHtml(e.st)}</div></div>
   <div class="dlg-b">
-    <div class="facts"><div><span>Data no banco</span><b>${br(e.date)}</b></div><div><span>Forma</span><b>${formaCell(e)}</b></div><div><span>Pagador no extrato</span><b>${esc(e.pagador||'—')}</b></div><div><span>Motivo</span><b style="font-size:13px">${esc(e.motivo||'—')}</b></div></div>
+    <div class="facts"><div><span>Data no banco</span><b>${br(e.date)} · ${esc(e.banco||'Sicoob')}</b></div><div><span>Forma</span><b>${formaCell(e)}</b></div><div><span>Pagador no extrato</span><b>${esc(e.pagador||'—')}</b></div><div><span>Motivo</span><b style="font-size:13px">${esc(e.motivo||'—')}</b></div></div>
     <div class="toolbar"><input class="search" id="ccq" placeholder="Pesquisar venda ou título por cliente, documento ou valor" value="${esc(S.cc.q)}" style="flex:1"></div>
     <p class="statusline" style="margin:0 0 8px">${q?'Resultado da pesquisa (vendas e títulos em aberto).':'Sugestões: mesmo valor, cliente parecido ou data próxima. Marque uma ou mais.'}</p>
     ${cands.length?cands.map(k=>`<div class="cand ${S.cc.sel.has(k.x.id)?'sel':''}" data-act="ccsel" data-id="${k.x.id}" role="checkbox" aria-checked="${S.cc.sel.has(k.x.id)}" tabindex="0">
@@ -899,7 +908,8 @@ function vDia(C){
   const d=S.dia; const dt=new Date(d+'T12:00:00');
   const eD=D.entradas.filter(e=>e.date===d), vD=D.vendas.filter(v=>v.date===d), rD=D.receber.filter(r=>r.baixado&&r.dataBaixa===d);
   const LI=C.LI;
-  const pdfs=[['Extrato Sicoob',eD.length,`${eD.length} entrada(s)`],['Listar Pedido por Data',vD.length,`${vD.length} venda(s)`],['Contas a Receber (pagos no dia)',rD.length,`${rD.length} título(s) de vendas anteriores`]];
+  const eS=eD.filter(e=>e.banco!=='Bradesco'), eB=eD.filter(e=>e.banco==='Bradesco');
+  const pdfs=[['Extrato Sicoob',eS.length,`${eS.length} entrada(s)`],['Extrato Bradesco',eB.length,`${eB.length} entrada(s)`],['Listar Pedido por Data',vD.length,`${vD.length} venda(s)`],['Contas a Receber (pagos no dia)',rD.length,`${rD.length} título(s) de vendas anteriores`]];
   const faltam=pdfs.filter(p=>!p[1]).length;
   // pendências do dia do lado do sistema
   const vendasPend=vD.filter(v=>(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')&&!LI[v.id]);
@@ -961,6 +971,7 @@ async function pdfLines(file){
   return out;
 }
 function tipoPdf(L){ const t=L.join('\n');
+  if(/Extrato Mensal \/ Por Per[íi]odo|Lan[çc]amento \| Dcto\./i.test(t)) return 'bradesco';
   if(/EXTRATO DE CONTA CORRENTE|HIST[ÓO]RICO DE MOVIMENTA/i.test(t)) return 'extrato';
   if(/Pedido - Por Data|Pedidos Emitidos|ListarPedidoPorData/i.test(t)) return 'vendas';
   if(/Contas a Receber/i.test(t)) return 'receber';
@@ -987,7 +998,28 @@ function lerExtrato(L){
   }
   const seen={};
   return {saidas,items:it.map(x=>{ const base=`${x.date}|${x.doc}|${x.valor}|${pnorm(x.det).slice(0,60)}`; seen[base]=(seen[base]||0)+1;
-    return {col:'entradas',id:'e'+hashStr(base+'#'+seen[base]),date:x.date,valor:x.valor,desc:(x.hist+(x.det?' · '+x.det:'')).trim(),pagador:pagadorDe(x.det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+x.det)}; })};
+    return {col:'entradas',id:'e'+hashStr(base+'#'+seen[base]),banco:'Sicoob',date:x.date,valor:x.valor,desc:(x.hist+(x.det?' · '+x.det:'')).trim(),pagador:pagadorDe(x.det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+x.det)}; })};
+}
+// Extrato Bradesco Net Empresa: cada lançamento ocupa 3 linhas (título / data-doc-valor-saldo / detalhe); só créditos
+function lerBradesco(L){
+  const it=[]; let on=false, data=null, ultimo='', cur=null, saidas=0;
+  for(const raw of L){ const l=raw.replace(/\s*\|\s*/g,' | ').trim();
+    if(/^Data \| Lan[çc]amento \| Dcto/i.test(l)){ on=true; cur=null; ultimo=''; continue; }
+    if(!on) continue;
+    if(/^Saldos Invest|^Os dados acima/i.test(l)){ on=false; cur=null; continue; }
+    let m;
+    if((m=/^(\d{2}\/\d{2}\/\d{4}) \| SALDO/i.exec(l))||/^Total \|/i.test(l)){ cur=null; ultimo=''; continue; }
+    if((m=/^(?:(\d{2}\/\d{2}\/\d{4}) \| )?(\d+) \| (-?[\d.]+,\d{2}) \| (-?[\d.]+,\d{2})$/.exec(l))){
+      if(m[1]) data=b2i(m[1]); const v=pMoney(m[3]);
+      if(v<0||!data){ saidas++; cur={skip:true}; ultimo=''; continue; }
+      cur={date:data,doc:m[2],hist:ultimo,det:'',valor:v}; it.push(cur); ultimo=''; continue; }
+    if(cur&&!cur.temDet){ cur.det=l.replace(/ \| /g,' '); cur.temDet=true; continue; }
+    ultimo=l.replace(/ \| /g,' '); cur=null;
+  }
+  const seen={};
+  return {saidas,items:it.map(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; seen[base]=(seen[base]||0)+1;
+    const det=x.det.replace(/\s\d{2}\/\d{2}$/,'');
+    return {col:'entradas',id:'b'+hashStr(base+'#'+seen[base]),banco:'Bradesco',date:x.date,valor:x.valor,desc:(x.hist+(det?' · '+det:'')).trim(),pagador:pagadorDe(det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+det)}; })};
 }
 // "Pedido - Por Data" (CGI): cada forma de pagamento vira uma linha de venda; parcelas a prazo futuras viram recebimentos previstos
 function formaPag(cond,venc,date){ const c=pnorm(cond);
@@ -1070,10 +1102,10 @@ async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set();
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
   const add=(col,x)=>{ const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; Object.assign(ex,x,col==='entradas'?keep:{}); touch(col,ex); return 0; }
-    if(col==='entradas'){ x.st='ni'; x.links=[]; } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
+    if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
-      if(t==='extrato'){ const r=lerExtrato(L); saidas+=r.saidas; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato: ${r.items.length} entrada(s), ${r.saidas} saída(s) ignorada(s)`); }
+      if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s) ignorada(s)`); }
       else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const {vendas,receber}=pedidosParaItens(r.ped);
         vendas.forEach(x=>{ nV+=add('vendas',x); datas.push(x.date); }); receber.forEach(x=>{ if(!D.receber.some(y=>y.id===x.id)) nR+=add('receber',x); });
         const tot=sum(r.ped,p=>p.total); const conf=r.meta?(r.meta.n===r.ped.length&&r.meta.total===tot?' (confere com o total do relatório)':` (relatório indica ${r.meta.n} pedidos)`):'';
@@ -1084,7 +1116,7 @@ async function importarPdfs(files){
     }catch(e){ console.error(e); erros.push(f.name); }
   }
   const lend=$('#lendo'); if(lend) lend.remove();
-  if(!res.length){ toast(`Não reconheci ${erros.join(', ')}. Envie o extrato Sicoob, o Listar Pedido por Data ou o Contas a Receber em PDF.`,7000); return; }
+  if(!res.length){ toast(`Não reconheci ${erros.join(', ')}. Envie o extrato Sicoob ou Bradesco, o Listar Pedido por Data ou o Contas a Receber em PDF.`,7000); return; }
   deduplicar(); reindex(); aplicarAjustes(); const c=conciliarAuto(); await flush();
   const dExt=datas.filter((d,i)=>datasExt.has(i)); const base=(dExt.length?dExt:datas).slice().sort();
   if(base.length){ S.de=dExt.length?base[0]:base[base.length-1]; S.ate=base[base.length-1]; S.quick=''; }
@@ -1093,10 +1125,11 @@ async function importarPdfs(files){
 }
 function vImportar(){
   const q=t=>`${D[t].length} lançamento(s) salvos`;
-  return `<h1 class="page">Alimentar com PDFs</h1><p class="lede">Solte os PDFs do dia de uma vez. O tipo de cada arquivo é reconhecido sozinho e a conciliação roda logo depois. Pode mandar o mesmo PDF de novo: nada é duplicado e as conferências feitas são mantidas.</p>
+  return `<h1 class="page">Alimentar com PDFs</h1><p class="lede"><b>${esc(EMPRESA.razao)}</b> · CNPJ ${esc(EMPRESA.cnpj)}. Solte os PDFs do dia de uma vez. O tipo de cada arquivo é reconhecido sozinho e a conciliação roda logo depois. Pode mandar o mesmo PDF de novo: nada é duplicado e as conferências feitas são mantidas.</p>
   <div class="drop big" data-act="pick" data-drop="1" tabindex="0" role="button"><strong>Solte aqui os PDFs</strong><span>ou toque para escolher</span></div>
   <div class="imp" style="margin-top:14px">
-    <div class="panel"><h3>Extrato Sicoob</h3><p>Internet Banking → Extrato. Só as entradas de dinheiro são usadas; saídas, pagamentos, débitos e tarifas são ignorados.</p><p class="statusline">${q('entradas')}</p></div>
+    <div class="panel"><h3>Extratos bancários</h3><p>Sicoob (Internet Banking → Extrato) e Bradesco (Net Empresa → Extrato Mensal / Por Período). Só as entradas de dinheiro são usadas; saídas, pagamentos, débitos e tarifas são ignorados. Transferências entre as contas da própria Correa saem como "outra entrada".</p>
+      <p class="statusline">${EMPRESA.contas.map(c=>`${esc(c.desc)}: ${D.entradas.filter(e=>(e.banco||'Sicoob')===c.banco).length} entrada(s)`).join('<br>')}</p></div>
     <div class="panel"><h3>Vendas</h3><p>CGI → Listar Pedido por Data (ou o PDF de um pedido). Pix e transferência são cruzados com o banco; parcelas a prazo futuras entram como recebimentos previstos.</p><p class="statusline">${q('vendas')}</p></div>
     <div class="panel"><h3>Recebimentos</h3><p>CGI → Contas a Receber. Em aberto viram previstos ou atrasados; títulos já baixados são ligados ao Pix que os pagou.</p><p class="statusline">${q('receber')}</p></div>
   </div>
@@ -1119,7 +1152,7 @@ function gerarPdf(){
   const stCol=(k)=>({content:STP[k]||k,styles:{textColor:COR[k]||MUT,fontStyle:'bold'}});
   doc.setFillColor(...G); doc.rect(0,0,W,24,'F'); doc.setTextColor(255);
   doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.text('Conciliação financeira',M,11);
-  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.text('Pagil Serrana Auto Peças · vendas × recebimentos × banco',M,17.5);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.text(EMPRESA.razao+' · CNPJ '+EMPRESA.cnpj,M,17.5);
   doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.text(S.de===S.ate?br(S.de):`${br(S.de)} a ${br(S.ate)}`,W-M,11,{align:'right'});
   doc.setFont('helvetica','normal'); doc.setFontSize(9); const agora=new Date(); doc.text('Gerado em '+agora.toLocaleDateString('pt-BR')+' '+agora.toTimeString().slice(0,5),W-M,17.5,{align:'right'});
   y=31;
@@ -1159,7 +1192,7 @@ function gerarPdf(){
       T({head:[['Data','Origem','Cliente','Descrição','Valor']],body:sv,foot:[[{content:`${sv.length} lançamento(s)`,colSpan:4},m(sum(C.serv)+sum(C.servMan))]],columnStyles:{0:{cellWidth:12},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }}); } }
   H('Detalhamento das entradas no banco','Cada crédito do extrato com o cliente, a venda ou o título correspondente e o status.');
   const es=C.entradas.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.forma.localeCompare(b.forma));
-  T({head:[['Data','Forma','Cliente','Venda / documento','Valor','Status']],body:es.map(e=>[brs(e.date),e.forma,clienteDaEntrada(e)+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'\n(pagador: '+e.pagador+')':''),(e.links||[]).map(refDe).join(', ')||'—',m(e.valor),stCol(e.st)]),
+  T({head:[['Data','Forma','Cliente','Venda / documento','Valor','Status']],body:es.map(e=>[brs(e.date),(e.banco||'Sicoob')+'\n'+e.forma,clienteDaEntrada(e)+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'\n(pagador: '+e.pagador+')':''),(e.links||[]).map(refDe).join(', ')||'—',m(e.valor),stCol(e.st)]),
     foot:[[{content:`${es.length} entrada(s)`,colSpan:4},m(sum(es)),'']],columnStyles:{0:{cellWidth:12},1:{cellWidth:20},3:{cellWidth:40},4:{halign:'right',cellWidth:22},5:{cellWidth:24}},
     didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }});
   // vendas dinheiro/cartão
@@ -1173,7 +1206,7 @@ function gerarPdf(){
     columnStyles:{0:{cellWidth:20},3:{halign:'right',cellWidth:24},4:{cellWidth:20}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===3) d.cell.styles.halign='right'; }});
   if(y>255){doc.addPage();y=24;} y+=10; doc.setDrawColor(...INK); doc.setLineWidth(.3);
   [['Conferido por',M],['Visto da gerência',W/2+4]].forEach(([l,x])=>{ doc.line(x,y,x+W/2-M-8,y); doc.setFontSize(8); doc.setTextColor(...MUT); doc.text(l,x,y+4); });
-  const n=doc.getNumberOfPages(); for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(...MUT); doc.text('Conciliação Pagil Serrana · '+(S.de===S.ate?br(S.de):`${br(S.de)} a ${br(S.ate)}`),M,290); doc.text(`Página ${i} de ${n}`,W-M,290,{align:'right'}); }
+  const n=doc.getNumberOfPages(); for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(...MUT); doc.text('Conciliação '+EMPRESA.nome+' · '+(S.de===S.ate?br(S.de):`${br(S.de)} a ${br(S.ate)}`),M,290); doc.text(`Página ${i} de ${n}`,W-M,290,{align:'right'}); }
   return doc;
 }
 async function baixar(nome,data,mime){
@@ -1200,11 +1233,11 @@ document.addEventListener('click',async ev=>{
     case 'quick': setQuick(t.dataset.q); render(); break;
     case 'sync': { if(Sync.state==='err'){ Sync.state='pend'; syncUI(); await flush(); await enviarAjustes();
         toast(Sync.state==='ok'?'Alterações salvas.':`Ainda não salvou (${Sync.err}).`); } else toast(db?'Tudo salvo no Firebase.':'Modo de teste: dados só neste navegador.'); break; }
-    case 'fbsalvarcfg': { try{ const c=lerConfigColada($('#fbcfg').value); localStorage.setItem('conc:fbcfg',JSON.stringify(c)); localStorage.removeItem('conc:teste'); location.reload(); }catch(e){ telaConfig('Configuração inválida: '+e.message); } break; }
-    case 'fbteste': localStorage.setItem('conc:teste','1'); location.reload(); break;
+    case 'fbsalvarcfg': { try{ const c=lerConfigColada($('#fbcfg').value); localStorage.setItem('corr:fbcfg',JSON.stringify(c)); localStorage.removeItem('corr:teste'); location.reload(); }catch(e){ telaConfig('Configuração inválida: '+e.message); } break; }
+    case 'fbteste': localStorage.setItem('corr:teste','1'); location.reload(); break;
     case 'fblogin': loginGoogle(); break;
-    case 'fbcfgnovo': localStorage.removeItem('conc:fbcfg'); location.reload(); break;
-    case 'fbsair': if(confirm('Sair desta conta neste aparelho?')){ unsubs.forEach(u=>u()); if(window.firebase&&firebase.apps.length) await firebase.auth().signOut(); localStorage.removeItem('conc:teste'); location.reload(); } break;
+    case 'fbcfgnovo': localStorage.removeItem('corr:fbcfg'); location.reload(); break;
+    case 'fbsair': if(confirm('Sair desta conta neste aparelho?')){ unsubs.forEach(u=>u()); if(window.firebase&&firebase.apps.length) await firebase.auth().signOut(); localStorage.removeItem('corr:teste'); location.reload(); } break;
     case 'dprev': S.dia=addDays(S.dia,-1); S.selE=null; render(); break;
     case 'dnext': S.dia=addDays(S.dia,1); S.selE=null; render(); break;
     case 'dsel': { if(!id||S.selE===id){ S.selE=null; } else { S.selE=id; const e=IDX[id]; S.selItens=new Set(e.links||[]); S.dq=''; } refresh(); break; }
@@ -1247,8 +1280,8 @@ document.addEventListener('click',async ev=>{
     case 'pdf': { if(!window.jspdf){ toast('O gerador de PDF não carregou. Recarregue a página.'); break; } if(!D.entradas.length&&!D.vendas.length&&!D.receber.length){ toast('Importe os dados antes de gerar o relatório.'); break; }
       try{ const d=gerarPdf(); await baixar(S.de===S.ate?`conciliacao-${S.de}.pdf`:`conciliacao-${S.de}-a-${S.ate}.pdf`,d.output('blob'),'application/pdf'); }catch(e){ console.error(e); toast('Não consegui gerar o PDF.'); } break; }
     case 'zerar': { if(!confirm('Apagar todas as entradas, vendas, recebimentos e conciliações? Não dá para desfazer.')) break;
-      for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('conc:')) localStorage.removeItem(k); } }
-      AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('conc:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
+      for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('corr:')) localStorage.removeItem(k); } }
+      AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('corr:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
     case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber,servicos:D.servicos},ajustes:AJ};
       const limpo=JSON.stringify(bk,(k,v)=>k&&k[0]==='_'?undefined:v); await baixar(`backup-conciliacao-${HOJE}.json`,limpo,'application/json'); break; }
