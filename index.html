@@ -250,6 +250,13 @@ const EMPRESA={nome:'Correa Auto Peças',razao:'CORREA AUTO PECAS E SUPRIMENTOS 
 // crédito vindo da própria Correa (transferência entre as contas Sicoob ⇄ Bradesco) não é venda
 const contaPropria=e=>{ const t=norm(e.desc+' '+e.pagador); return /CORREA AUTO PECAS|0?66\.?032\.?600/.test(t); };
 
+// Cielo: o crédito no banco é o repasse dos cartões vendidos no dia anterior
+const ehCielo=e=>/CIELO/.test(norm((e.desc||'')+' '+(e.pagador||'')));
+const diaCartoes=e=>addDays(e.date,-1);
+function marcarCielo(e){ const ref=diaCartoes(e); e.st='ok'; e.links=[]; e.auto=true; e.cielo=true; e.refDia=ref; e.motivo=`Recebimento dos cartões de ${brs(ref)} (dia anterior)`; }
+function cartoesDoDia(d){ const vs=D.vendas.filter(v=>v.forma==='Cartão'&&v.date===d); const rs=D.receber.filter(r=>r.baixado&&r.dataBaixa===d&&r.formaRec==='Cartão');
+  return {total:sum(vs)+sum(rs),n:vs.length+rs.length}; }
+
 /* ============ leitura de valores e datas ============ */
 function parseValor(v){
   if(v==null||v==='') return null;
@@ -390,7 +397,7 @@ function aplicarAjustes(){
     if(x.col==='receber') x.formaRec=a.f==='Não informada'?'':a.f;
     else { if(a.o&&a.o!==a.f) x.formaOrig=a.o; else delete x.formaOrig; x.forma=a.f; } }
   for(const id in AJ.conc){ const e=IDX[id]; const a=AJ.conc[id]; if(!e||!a||e.col!=='entradas') continue;
-    e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; if(e.st==='ok'&&!e.links.length) e.st='ni'; }
+    e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; e.cielo=false; if(e.st==='ok'&&!e.links.length) e.st='ni'; }
 }
 function mesclarAjustes(rem){ let mudou=false;
   for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
@@ -526,6 +533,7 @@ function candidatos(e,LI,livres=true){
 }
 function conciliarAuto(){
   D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&contaPropria(e)){ e.st='out'; e.links=[]; e.auto=true; e.motivo='Transferência entre contas da Correa'; touch('entradas',e); } });
+  D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&ehCielo(e)){ marcarCielo(e); touch('entradas',e); } else if(e.cielo&&!ehCielo(e)){ e.cielo=false; } });
   const pend=D.entradas.filter(e=>e.st!=='ok'&&e.st!=='out'&&!e.manual);
   pend.forEach(e=>{ e.st='ni'; e.links=[]; e.motivo=''; });
   let LI=linkIndex(); const usados=new Set(Object.keys(LI));
@@ -585,7 +593,8 @@ function calc(){
   // recebido por forma
   const porForma={}; FORMAS_R.forEach(f=>porForma[f]={total:0,itens:[]});
   vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão').forEach(v=>{ porForma[v.forma].total+=v.valor; porForma[v.forma].itens.push({k:'venda',x:v}); });
-  entradas.filter(e=>e.st!=='out').forEach(e=>{ const f=e.forma==='Cartão'?'Cartão':e.forma; porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); });
+  const cielo=entradas.filter(e=>e.cielo&&e.st==='ok');
+  entradas.filter(e=>e.st!=='out'&&!(e.cielo&&e.st==='ok')).forEach(e=>{ const f=e.forma==='Cartão'?'Cartão':e.forma; porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); });
   D.receber.filter(r=>r.baixado&&inP(r.dataBaixa)&&!LI[r.id]).forEach(r=>{ const f=r.formaRec&&porForma[r.formaRec]?r.formaRec:BSB; porForma[f].total+=r.valor; porForma[f].itens.push({k:'rec',x:r}); });
   // serviços cadastrados à mão (ex.: recebidos em dinheiro) também são dinheiro recebido
   const servMan=D.servicos.filter(x=>inP(x.date));
@@ -599,7 +608,7 @@ function calc(){
   const vendasNaoEntrou=vendas.filter(v=>v._st==='nao'&&v.date<HOJE);
   const baixaNaoEntrou=[]; // título baixado com forma escolhida à mão conta como identificado
   const byst=st=>entradas.filter(e=>e.st===st);
-  return {LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
+  return {cielo,LI,vendas,entradas,porForma,recebido,abertos,atrasados,previstos,recebidosTit,vendasNaoEntrou,baixaNaoEntrou,
     ok:byst('ok'),conf:byst('conf'),ni:byst('ni'),out:byst('out'),serv:byst('serv'),servMan,
     tVendas:sum(vendas),tEntradas:sum(entradas.filter(e=>e.st!=='out')),statusAlvo};
 }
@@ -610,13 +619,13 @@ const ST={parcial:['conf','🟠 Pago parcial'],serv:['serv','🔵 Serviço'],ser
   semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],identificado:['ok','🟢 Identificado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
 const stHtml=k=>{ const s=ST[k]||['neu',k]; return `<span class="st ${s[0]}">${esc(s[1])}</span>`; };
 function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:`Título ${x.doc||'—'}`; }
-function clienteDaEntrada(e){ if(e.links&&e.links.length){ const n=[...new Set(e.links.map(id=>IDX[id]&&IDX[id].cliente).filter(Boolean))]; if(n.length) return n.join(', '); } return e.pagador||'Não identificado'; }
-const ORIG={venda:'Vendas',titulo:'Títulos pagos',parcial:'Pagos parcial',serv:'Serviços',aberto:'Títulos em aberto',semvinc:'Sem vínculo'};
-function origemEntrada(e){ if(e.st==='serv') return 'serv'; const xs=(e.links||[]).map(i=>IDX[i]).filter(Boolean); if(!xs.length) return 'semvinc';
+function clienteDaEntrada(e){ if(e.cielo&&e.st==='ok') return `Cartões de ${brs(e.refDia||diaCartoes(e))} (Cielo)`; if(e.links&&e.links.length){ const n=[...new Set(e.links.map(id=>IDX[id]&&IDX[id].cliente).filter(Boolean))]; if(n.length) return n.join(', '); } return e.pagador||'Não identificado'; }
+const ORIG={cartao:'Cartões (Cielo)',venda:'Vendas',titulo:'Títulos pagos',parcial:'Pagos parcial',serv:'Serviços',aberto:'Títulos em aberto',semvinc:'Sem vínculo'};
+function origemEntrada(e){ if(e.st==='serv') return 'serv'; if(e.cielo&&e.st==='ok') return 'cartao'; const xs=(e.links||[]).map(i=>IDX[i]).filter(Boolean); if(!xs.length) return 'semvinc';
   if(xs.some(x=>x.col==='receber'&&x.parcial)) return 'parcial'; if(xs.some(x=>x.col==='receber')) return 'titulo'; return 'venda'; }
 function origemReceber(r,LI){ if(r.parcial) return 'parcial'; if(r.baixado||(LI[r.id]&&LI[r.id].st==='ok')) return 'titulo'; return 'aberto'; }
 function linhaEntrada(e){ return {orig:origemEntrada(e),cliente:clienteDaEntrada(e),sub:(e.banco||'Sicoob')+' · '+(e.pagador&&clienteDaEntrada(e)!==e.pagador?'Pagador no extrato: '+e.pagador:e.desc),valor:e.valor,data:e.date,
-  doc:(e.links||[]).map(refDe).join(', ')||'—',st:e.st,act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e}; }
+  doc:e.cielo&&e.st==='ok'?`Cartões de ${brs(e.refDia||diaCartoes(e))}`:((e.links||[]).map(refDe).join(', ')||'—'),st:e.st,act:`data-act="conc" data-id="${e.id}"`,forma:e.forma,item:e}; }
 function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v.forma,valor:v.valor,data:v.date,doc:'Venda '+(v.doc||'—'),st:v._st||'nao',
   act:(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')?`data-act="alvo" data-id="${v.id}"`:'',forma:v.forma,
   extra:v._e?`Entrou ${brs(v._e.date)} · ${v._e.pagador||v._e.desc}`:'',item:v}; }
@@ -692,7 +701,7 @@ function vPainel(C){
 }
 function tabela(rows,opt={}){
   let filtro='';
-  if(opt.fid){ const ord=['venda','titulo','parcial','serv','aberto','semvinc']; const pres=ord.filter(o=>rows.some(r=>r.orig===o));
+  if(opt.fid){ const ord=['venda','titulo','parcial','cartao','serv','aberto','semvinc']; const pres=ord.filter(o=>rows.some(r=>r.orig===o));
     if(pres.length>1){ S.orig=S.orig||{}; let cur=S.orig[opt.fid]||'todos'; if(cur!=='todos'&&!pres.includes(cur)) cur='todos';
       filtro=`<div class="toolbar orig"><div class="chips">${[['todos',`Todos · ${money(sum(rows))}`],...pres.map(o=>[o,`${ORIG[o]} (${rows.filter(r=>r.orig===o).length}) · ${money(sum(rows.filter(r=>r.orig===o)))}`])]
         .map(([k,l])=>`<button data-act="origem" data-fid="${opt.fid}" data-v="${k}" aria-pressed="${cur===k}">${esc(l)}</button>`).join('')}</div></div>`;
@@ -788,7 +797,7 @@ function vServicos(C){
       ${cand.map(e=>`<tr><td><b>${esc(e.pagador||e.desc.slice(0,50))}</b><span class="small">${esc(e.desc.slice(0,80))}</span></td><td class="num"><b>${money(e.valor)}</b></td><td>${br(e.date)}</td><td>${esc(e.forma)}</td><td>${stHtml(e.st)}</td>
         <td><button class="btn sm" data-act="marcarserv" data-id="${e.id}">É serviço</button></td></tr>`).join('')}</tbody></table></div></section>`:''}`;
 }
-function marcarServico(e,desc){ e.links=[]; e.st='serv'; e.manual=true; e.auto=false; e.motivo=desc||'Serviço'; touch('entradas',e); salvarConc(e); }
+function marcarServico(e,desc){ e.cielo=false; e.links=[]; e.st='serv'; e.manual=true; e.auto=false; e.motivo=desc||'Serviço'; touch('entradas',e); salvarConc(e); }
 function pedirDescServico(){ const d=prompt('Descrição do serviço (opcional): ex. mão de obra, locação, frete…',''); return d===null?null:(d.trim()||'Serviço'); }
 function dlgServico(id){
   const x=id?IDX[id]:null; const dlg=$('#dlg'); dlg.className='narrow'; S.dlgKind='serv';
@@ -814,6 +823,10 @@ function abrirDet(k,f){
   else if(k==='cond'){ titulo='Vendas · '+f; sub='Clientes e pedidos vendidos nesta condição de pagamento.'; rows=C.vendas.filter(v=>condicaoGrupo(v)===f).sort((a,b)=>b.valor-a.valor).map(linhaVenda); }
   else if(k==='forma'){ const fs=String(f).split('|').filter(x=>C.porForma[x]); titulo=fs.length>1?fs.join(' / '):f; sub='Todos os lançamentos que formam este total.';
     rows=fs.flatMap(fm=>C.porForma[fm].itens.map(i=>Object.assign(linhaItem(i,LI),{forma:fm}))); if(fs.length>1) grupos=fs.filter(fm=>C.porForma[fm].itens.length); if(f===BSB) sub='Títulos baixados no período sem forma de recebimento informada. Escolha a forma na coluna Forma: o título sai daqui e vai para a forma escolhida (Dinheiro, Cartão, Pix…).'; }
+  else if(k==='cielo'){ titulo='Cielo · recebimento dos cartões'; sub='Cada crédito da Cielo é o repasse dos cartões vendidos no dia anterior. A diferença costuma ser taxa, parcelado ou antecipação.';
+    const dias=[...new Set(C.cielo.map(e=>e.refDia||diaCartoes(e)))].sort();
+    rows=[...C.cielo.map(e=>Object.assign(linhaEntrada(e),{forma:'Recebido da Cielo'})),...dias.flatMap(ref=>[...D.vendas.filter(v=>v.forma==='Cartão'&&v.date===ref).map(linhaVenda),...D.receber.filter(r=>r.baixado&&r.dataBaixa===ref&&r.formaRec==='Cartão').map(r=>Object.assign(linhaReceber(r,LI),{data:r.dataBaixa}))].map(x=>Object.assign(x,{forma:'Cartões vendidos no dia anterior'})))];
+    grupos=['Recebido da Cielo','Cartões vendidos no dia anterior']; }
   else if(k==='entradas'){ titulo='Entradas no banco'; rows=C.entradas.filter(e=>e.st!=='out').map(linhaEntrada); grupos=[...new Set(C.entradas.map(e=>e.forma))]; }
   else if(['ok','conf','ni'].includes(k)){ titulo=ST[k][1]; sub=k==='ok'?'Entradas com venda ou título identificado.':k==='conf'?'Existe uma possibilidade, mas precisa da sua confirmação. Toque para conferir.':'Dinheiro que entrou sem venda ou título correspondente. Toque para escolher manualmente.';
     rows=C[k].map(linhaEntrada); grupos=[...new Set(C[k].map(e=>e.forma))]; }
@@ -849,7 +862,7 @@ function desenhaConc(){ S.dlgKind='cc';
   const dlg=$('#dlg'); dlg.className='';
   dlg.innerHTML=`<div class="dlg-h"><div><h3>Conferir entrada de ${money(e.valor)}</h3><p>${esc(e.desc)}</p></div><div>${stHtml(e.st)}</div></div>
   <div class="dlg-b">
-    <div class="facts"><div><span>Data no banco</span><b>${br(e.date)} · ${esc(e.banco||'Sicoob')}</b></div><div><span>Forma</span><b>${formaCell(e)}</b></div><div><span>Pagador no extrato</span><b>${esc(e.pagador||'—')}</b></div><div><span>Motivo</span><b style="font-size:13px">${esc(e.motivo||'—')}</b></div></div>
+    <div class="facts"><div><span>Data no banco</span><b>${br(e.date)} · ${esc(e.banco||'Sicoob')}</b></div><div><span>Forma</span><b>${formaCell(e)}</b></div><div><span>Pagador no extrato</span><b>${esc(e.pagador||'—')}</b></div><div><span>Motivo</span><b style="font-size:13px">${esc(e.motivo||'—')}</b></div>${ehCielo(e)?(()=>{ const ref=diaCartoes(e), c=cartoesDoDia(ref), rec=sum(D.entradas.filter(x=>ehCielo(x)&&x.date===e.date&&x.st!=='out')); return `<div><span>Cartões vendidos em ${brs(ref)}</span><b>${money(c.total)} <span class="small">${c.n} venda(s)</span></b></div><div><span>Cielo recebido em ${brs(e.date)}</span><b>${money(rec)} <span class="small">${c.total?'diferença '+money(c.total-rec)+' (taxas, parcelas, antecipação)':'sem vendas em cartão nesse dia'}</span></b></div>`; })():''}</div>
     <div class="toolbar"><input class="search" id="ccq" placeholder="Pesquisar venda ou título por cliente, documento ou valor" value="${esc(S.cc.q)}" style="flex:1"></div>
     <p class="statusline" style="margin:0 0 8px">${q?'Resultado da pesquisa (vendas e títulos em aberto).':'Sugestões: mesmo valor, cliente parecido ou data próxima. Marque uma ou mais.'}</p>
     ${cands.length?cands.map(k=>`<div class="cand ${S.cc.sel.has(k.x.id)?'sel':''}" data-act="ccsel" data-id="${k.x.id}" role="checkbox" aria-checked="${S.cc.sel.has(k.x.id)}" tabindex="0">
@@ -945,7 +958,7 @@ function vDia(C){
     <section class="block"><h2>2. Resumo do dia</h2><div class="minis">
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
-      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${(()=>{ const ps=rD.filter(r=>r.parcial); return ps.length?`<button class="mini a" data-act="det" data-k="parciais"><span>🟠 Pagos parcial (${ps.length})</span><b>${money(sum(ps))}</b><span>falta ${money(ps.reduce((a,r)=>a+(r.saldo||0),0))}</span></button>`:''; })()}${kpi('🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),'','serv')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
+      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${C.cielo.length?(()=>{ const ref=addDays(d,-1), c=cartoesDoDia(ref), rec=sum(C.cielo); return `<button class="mini" data-act="det" data-k="cielo"><span>Cielo · cartões de ${brs(ref)}</span><b>${money(rec)}</b><span>vendido ${money(c.total)} · dif. ${money(c.total-rec)}</span></button>`; })():''}${(()=>{ const ps=rD.filter(r=>r.parcial); return ps.length?`<button class="mini a" data-act="det" data-k="parciais"><span>🟠 Pagos parcial (${ps.length})</span><b>${money(sum(ps))}</b><span>falta ${money(ps.reduce((a,r)=>a+(r.saldo||0),0))}</span></button>`:''; })()}${kpi('🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),'','serv')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
     ${graficoCondicoes(C,'Vendas do dia por condição de pagamento')}
     <section class="block"><h2>3. Vincular</h2><p class="sub">À esquerda, o dinheiro que entrou no banco. À direita, quem pagou: escolha a venda ou o título e toque em Vincular.</p>
       <div class="board"><div class="col">${esquerda}</div><div class="col">${direita}</div></div></section>
@@ -1102,7 +1115,7 @@ async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set();
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
   const add=(col,x)=>{ const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; Object.assign(ex,x,col==='entradas'?keep:{}); touch(col,ex); return 0; }
-    if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
+    if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
       if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s) ignorada(s)`); }
@@ -1242,9 +1255,9 @@ document.addEventListener('click',async ev=>{
     case 'dnext': S.dia=addDays(S.dia,1); S.selE=null; render(); break;
     case 'dsel': { if(!id||S.selE===id){ S.selE=null; } else { S.selE=id; const e=IDX[id]; S.selItens=new Set(e.links||[]); S.dq=''; } refresh(); break; }
     case 'ditem': { S.selItens.has(id)?S.selItens.delete(id):S.selItens.add(id); refresh(); break; }
-    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
-    case 'dout': { const e=IDX[S.selE]; if(!e) break; e.links=[]; e.st='out'; e.manual=true; e.motivo='Não é venda (transferência própria, estorno etc.)'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); break; }
-    case 'desfaz': { const e=IDX[id]; if(!e) break; e.links=[]; e.st='ni'; e.auto=false; e.manual=true; e.motivo='Vínculo desfeito'; touch('entradas',e); salvarConc(e); refresh(e.id); toast('Vínculo desfeito. A entrada voltou para 🔴 Não identificado.'); break; }
+    case 'dlink': { const e=IDX[S.selE]; if(!e||!S.selItens.size) break; e.cielo=false; e.links=[...S.selItens]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Vinculado no lançamento do dia'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); toast(`🟢 ${money(e.valor)} vinculado a ${clienteDaEntrada(e)}.`); break; }
+    case 'dout': { const e=IDX[S.selE]; if(!e) break; e.cielo=false; e.links=[]; e.st='out'; e.manual=true; e.motivo='Não é venda (transferência própria, estorno etc.)'; touch('entradas',e); salvarConc(e); S.selE=null; refresh(e.id); agendarConciliacao(); break; }
+    case 'desfaz': { const e=IDX[id]; if(!e) break; e.cielo=false; e.links=[]; e.st='ni'; e.auto=false; e.manual=true; e.motivo='Vínculo desfeito'; touch('entradas',e); salvarConc(e); refresh(e.id); toast('Vínculo desfeito. A entrada voltou para 🔴 Não identificado.'); break; }
     case 'det': abrirDet(t.dataset.k,t.dataset.f); break;
     case 'detg': S.det.g=t.dataset.v; desenhaDet(); break;
     case 'origem': { S.orig=S.orig||{}; S.orig[t.dataset.fid]=t.dataset.v; if(t.dataset.fid==='det'&&$('#dlg').open) desenhaDet(); else refresh(); break; }
@@ -1254,7 +1267,7 @@ document.addEventListener('click',async ev=>{
     case 'alvo': abrirAlvo(id); break;
     case 'alvopick': { const e=IDX[t.dataset.e]; abrirConc(e.id,[...(e.st==='ok'?e.links:[]),id]); break; }
     case 'ccsel': { const sc=($('#dlg .dlg-b')||{}).scrollTop||0; S.cc.sel.has(id)?S.cc.sel.delete(id):S.cc.sel.add(id); desenhaConc(); const b=$('#dlg .dlg-b'); if(b) b.scrollTop=sc; break; }
-    case 'ccok': { const e=IDX[S.cc.id]; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
+    case 'ccok': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[...S.cc.sel]; e.st='ok'; e.auto=false; e.manual=true; e.motivo='Conferido manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); toast(`🟢 Conciliado: ${money(e.valor)} de ${clienteDaEntrada(e)}.`); break; }
     case 'ccserv': { const e=IDX[S.cc.id]; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
     case 'dserv': { const e=IDX[S.selE]; if(!e) break; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); S.selE=null; refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
     case 'marcarserv': { const e=IDX[id]; if(!e) break; const d=pedirDescServico(); if(d===null) break; marcarServico(e,d); refresh(e.id); toast(`🔵 ${money(e.valor)} marcado como serviço.`); break; }
@@ -1267,8 +1280,8 @@ document.addEventListener('click',async ev=>{
       Object.assign(x,{date:dt,valor:Math.abs(pv.c),cliente:cli,forma:$('#sForma').value,desc:$('#sDesc').value.trim(),doc:$('#sDoc').value.trim()});
       if(antigo&&antigo!==dt) markDirty('servicos',antigo); touch('servicos',x); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(x.id); toast('Serviço salvo.'); break; }
     case 'servdel': { const x=IDX[id]; if(!x||!confirm('Excluir este serviço?')) break; D.servicos=D.servicos.filter(y=>y.id!==id); markDirty('servicos',x.date); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(); break; }
-    case 'ccout': { const e=IDX[S.cc.id]; e.links=[]; e.st='out'; e.manual=true; e.motivo='Marcado como outra entrada (não é venda)'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); break; }
-    case 'ccni': { const e=IDX[S.cc.id]; e.links=[]; e.st='ni'; e.manual=true; e.motivo='Marcado manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); break; }
+    case 'ccout': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[]; e.st='out'; e.manual=true; e.motivo='Marcado como outra entrada (não é venda)'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); break; }
+    case 'ccni': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[]; e.st='ni'; e.manual=true; e.motivo='Marcado manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); break; }
     case 'auto': { D.entradas.forEach(e=>{ if(e.st!=='ok'||e.auto){ if(!e.manual){ e.st='ni'; e.links=[]; } } }); const r=conciliarAuto(); render(); toast(`Conciliação: 🟢 ${r.ok||0} · 🟡 ${r.conf||0} · 🔴 ${r.ni||0}.`); break; }
     case 'pick': $('#fileInput').click(); break;
     case 'addvenda': dlgCadastro('venda'); break;
