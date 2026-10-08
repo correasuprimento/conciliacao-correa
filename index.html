@@ -248,6 +248,9 @@ function toast(m,ms=4500){const t=$('#toast');t.textContent=m;t.hidden=false;cle
 const EMPRESA={nome:'Correa Auto Peças',razao:'CORREA AUTO PECAS E SUPRIMENTOS LTDA',cnpj:'66.032.600/0001-40',
   contas:[{banco:'Sicoob',desc:'Sicoob Credirochas · coop. 3260-3 · conta 229.559-8'},{banco:'Bradesco',desc:'Bradesco · ag. 2986 · conta 0003714-1'}]};
 // crédito vindo da própria Correa (transferência entre as contas Sicoob ⇄ Bradesco) não é venda
+// créditos que não entram no app: PIX da Cielo e depósito de cheque pelo celular (Sicoob)
+const ignorarEntrada=e=>{ const t=norm((e.desc||'')+' '+(e.pagador||'')); return /CIELO/.test(t)||/DEP(OSITO|\.)?\s*(DE\s*)?CHEQUE|CHEQUE.*CELULAR|CELULAR.*CHEQUE|DEP\w*\s*CH(Q|EQ)?\b.*CEL/.test(t); };
+const rendimento=e=>/RENTAB|INVEST FACIL|RENDIMENTO|APLICACAO/.test(norm(e.desc));
 const contaPropria=e=>{ const t=norm(e.desc+' '+e.pagador); return /CORREA AUTO PECAS|0?66\.?032\.?600/.test(t); };
 
 // Cielo: o crédito no banco é o repasse dos cartões vendidos no dia anterior
@@ -256,6 +259,11 @@ const diaCartoes=e=>addDays(e.date,-1);
 function marcarCielo(e){ const ref=diaCartoes(e); e.st='ok'; e.links=[]; e.auto=true; e.cielo=true; e.refDia=ref; e.motivo=`Recebimento dos cartões de ${brs(ref)} (dia anterior)`; }
 function cartoesDoDia(d){ const vs=D.vendas.filter(v=>v.forma==='Cartão'&&v.date===d); const rs=D.receber.filter(r=>r.baixado&&r.dataBaixa===d&&r.formaRec==='Cartão');
   return {total:sum(vs)+sum(rs),n:vs.length+rs.length}; }
+
+// dias cobertos por cada extrato importado (para saber que o extrato do dia veio, mesmo sem crédito)
+const extratoCobre=(banco,d)=>!!AJ.cob[banco+'_'+d];
+async function registrarCobertura(c){ if(!c||!c.de||!c.ate) return; const t=new Date().toISOString();
+  for(let d=c.de, n=0; d<=c.ate&&n<62; d=addDays(d,1), n++){ const k=c.banco+'_'+d; if(!AJ.cob[k]) await gravarAjuste('cob',k,{t}); } }
 
 /* ============ leitura de valores e datas ============ */
 function parseValor(v){
@@ -316,6 +324,7 @@ function formaEntrada(t){
 }
 function formaVenda(t,data,venc){
   const c=norm(t);
+  if(/CHEQUE|\bCHQ\b/.test(c)) return 'Cheque';
   if(/CART|CREDITO|DEBITO|MAQUIN/.test(c)&&!/DIAS|\bDD\b/.test(c)) return 'Cartão';
   if(venc&&data&&venc>data) return 'A prazo';
   if(/PIX/.test(c)) return 'Pix';
@@ -391,7 +400,7 @@ function syncUI(){ const el=document.getElementById('sync'); if(!el) return;
 window.addEventListener('online',syncUI); window.addEventListener('offline',syncUI);
 
 /* ============ ajustes manuais (ajustes/manual) ============ */
-const AJ={formas:{},conc:{}}; const pendAJ=new Set();
+const AJ={formas:{},conc:{},cob:{}}; const pendAJ=new Set();
 function aplicarAjustes(){
   for(const id in AJ.formas){ const x=IDX[id]; const a=AJ.formas[id]; if(!x||!a) continue;
     if(x.col==='receber') x.formaRec=a.f==='Não informada'?'':a.f;
@@ -400,7 +409,7 @@ function aplicarAjustes(){
     e.st=a.st; e.links=(a.links||[]).filter(l=>IDX[l]); e.motivo=a.motivo||''; e.manual=true; e.auto=false; e.cielo=false; if(e.st==='ok'&&!e.links.length) e.st='ni'; }
 }
 function mesclarAjustes(rem){ let mudou=false;
-  for(const c of ['formas','conc']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
+  for(const c of ['formas','conc','cob']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
     if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } } }
   return mudou; }
 async function gravarAjuste(campo,id,valor){
@@ -413,10 +422,10 @@ async function gravarAjuste(campo,id,valor){
   if(!ok) toast(`Não foi possível salvar (${erro}). Toque em "tentar de novo" no topo.`,8000);
   return ok;
 }
-async function enviarAjustes(){ for(const k of [...pendAJ]){ const [c,id]=k.split(':'); await gravarAjuste(c,id,AJ[c][id]); } }
+async function enviarAjustes(){ for(const k of [...pendAJ]){ const c=k.slice(0,k.indexOf(':')), id=k.slice(k.indexOf(':')+1); await gravarAjuste(c,id,AJ[c][id]); } }
 async function carregarAjustes(){
-  if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; return; }
-  try{ const d=JSON.parse(localStorage.getItem('corr:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; } }catch(e){}
+  if(db){ const a=(Store.inicial&&Store.inicial.ajustes)||{}; AJ.formas=a.formas||{}; AJ.conc=a.conc||{}; AJ.cob=a.cob||{}; return; }
+  try{ const d=JSON.parse(localStorage.getItem('corr:ajustes')||'null'); if(d){ AJ.formas=d.formas||{}; AJ.conc=d.conc||{}; AJ.cob=d.cob||{}; } }catch(e){}
 }
 function salvarConc(e){ return gravarAjuste('conc',e.id,{st:e.st,links:e.links||[],motivo:e.motivo||'',t:new Date().toISOString()}); }
 const dirty={}; let saveTimer=null, flushing=null, flushAgain=false;
@@ -443,7 +452,7 @@ function touch(col,x){ markDirty(col,gkey(col,x)); }
 async function recarregarDaPlanilha(silencioso){
   if(!db){ if(!silencioso) toast('Modo de teste: os dados estão neste navegador.'); return; }
   await flush();
-  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes();
+  try{ await Store.init(); for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); } reindex(); await carregarAjustes(); aplicarAjustes(); limparIgnorados();
     Sync.state='ok'; syncUI(); refresh(); if(!silencioso) toast('Dados atualizados.'); }
   catch(e){ toast('Não consegui ler o Firebase: '+traduzErro(e),7000); }
 }
@@ -523,7 +532,7 @@ function linkIndex(){ const m={}; for(const e of D.entradas) (e.links||[]).forEa
 // status: ok (conciliado), conf (conferir), ni (não identificado), out (outra entrada: transferência própria, estorno etc.)
 function candidatos(e,LI,livres=true){
   const out=[]; const pag=e.pagador||'';
-  for(const v of D.vendas){ if(livres&&LI[v.id]&&LI[v.id].e!==e) continue; if(v.forma==='A prazo'||v.forma==='Dinheiro'||v.forma==='Cartão') continue;
+  for(const v of D.vendas){ if(livres&&LI[v.id]&&LI[v.id].e!==e) continue; if(v.forma==='A prazo'||v.forma==='Dinheiro'||v.forma==='Cartão'||v.forma==='Cheque') continue;
     const dd=dayDiff(v.date,e.date); if(dd<-1||dd>5) continue;
     out.push({x:v,tipo:'venda',valorOk:v.valor===e.valor,ns:nomeScore(v.cliente,pag+' '+e.desc),dd}); }
   for(const r of D.receber){ if(livres&&LI[r.id]&&LI[r.id].e!==e) continue; if(r.baixado&&CAIXA.includes(r.formaRec)) continue;
@@ -531,8 +540,13 @@ function candidatos(e,LI,livres=true){
     out.push({x:r,tipo:'receber',valorOk:r.valor===e.valor||(!!r.valorAlt&&r.valorAlt===e.valor),ns:nomeScore(r.cliente,pag+' '+e.desc),dd}); }
   return out;
 }
+function limparIgnorados(){
+  const fora=D.entradas.filter(ignorarEntrada); if(fora.length){ D.entradas=D.entradas.filter(e=>!ignorarEntrada(e)); fora.forEach(e=>touch('entradas',e)); reindex(); }
+    D.vendas.forEach(v=>{ if(v.forma==='Outros'&&/CHEQUE|\bCHQ\b/.test(pnorm(v.formaTxt||''))&&!AJ.formas[v.id]){ v.forma='Cheque'; touch('vendas',v); } });
+}
 function conciliarAuto(){
-  D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&contaPropria(e)){ e.st='out'; e.links=[]; e.auto=true; e.motivo='Transferência entre contas da Correa'; touch('entradas',e); } });
+  limparIgnorados();
+  D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&(contaPropria(e)||rendimento(e))){ e.st='out'; e.links=[]; e.auto=true; e.motivo=rendimento(e)?'Rendimento de aplicação (Invest Fácil)':'Transferência entre contas da Correa'; touch('entradas',e); } });
   D.entradas.forEach(e=>{ if(!e.manual&&e.st!=='out'&&ehCielo(e)){ marcarCielo(e); touch('entradas',e); } else if(e.cielo&&!ehCielo(e)){ e.cielo=false; } });
   const pend=D.entradas.filter(e=>e.st!=='ok'&&e.st!=='out'&&!e.manual);
   pend.forEach(e=>{ e.st='ni'; e.links=[]; e.motivo=''; });
@@ -589,10 +603,10 @@ function calc(){
   const dExt=D.entradas.map(e=>e.date).sort(); const cobIni=dExt[0], cobFim=dExt[dExt.length-1];
   const coberto=d=>cobIni&&d>=addDays(cobIni,-1)&&d<=cobFim;
   vendas.forEach(v=>{ const l=LI[v.id]; v._e=l?l.e:null;
-    v._st= v.forma==='Dinheiro'?'caixa': v.forma==='Cartão'?'maq': v.forma==='A prazo'?'prazo': l?(l.st==='ok'?'ok':'conf'):coberto(v.date)?'nao':'semext'; });
+    v._st= v.forma==='Dinheiro'?'caixa': v.forma==='Cartão'?'maq': v.forma==='Cheque'?'cheque': v.forma==='A prazo'?'prazo': l?(l.st==='ok'?'ok':'conf'):coberto(v.date)?'nao':'semext'; });
   // recebido por forma
   const porForma={}; FORMAS_R.forEach(f=>porForma[f]={total:0,itens:[]});
-  vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão').forEach(v=>{ porForma[v.forma].total+=v.valor; porForma[v.forma].itens.push({k:'venda',x:v}); });
+  vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão'||v.forma==='Cheque').forEach(v=>{ porForma[v.forma].total+=v.valor; porForma[v.forma].itens.push({k:'venda',x:v}); });
   const cielo=entradas.filter(e=>e.cielo&&e.st==='ok');
   entradas.filter(e=>e.st!=='out'&&!(e.cielo&&e.st==='ok')).forEach(e=>{ const f=e.forma==='Cartão'?'Cartão':e.forma; porForma[f].total+=e.valor; porForma[f].itens.push({k:'entrada',x:e}); });
   D.receber.filter(r=>r.baixado&&inP(r.dataBaixa)&&!LI[r.id]).forEach(r=>{ const f=r.formaRec&&porForma[r.formaRec]?r.formaRec:BSB; porForma[f].total+=r.valor; porForma[f].itens.push({k:'rec',x:r}); });
@@ -615,7 +629,7 @@ function calc(){
 
 /* ============ descrições para listas ============ */
 const ST={parcial:['conf','🟠 Pago parcial'],serv:['serv','🔵 Serviço'],servm:['serv','🔵 Serviço (cadastrado)'],ok:['ok','🟢 Conciliado'],conf:['conf','🟡 Conferir'],ni:['ni','🔴 Não identificado'],out:['out','Outra entrada'],
-  caixa:['neu','Caixa (dinheiro)'],maq:['neu','Maquininha'],prazo:['neu','A prazo'],nao:['ni','🔴 Não entrou no banco'],
+  caixa:['neu','Caixa (dinheiro)'],cheque:['neu','Cheque'],maq:['neu','Maquininha'],prazo:['neu','A prazo'],nao:['ni','🔴 Não entrou no banco'],
   semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],identificado:['ok','🟢 Identificado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
 const stHtml=k=>{ const s=ST[k]||['neu',k]; return `<span class="st ${s[0]}">${esc(s[1])}</span>`; };
 function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:`Título ${x.doc||'—'}`; }
@@ -730,7 +744,7 @@ function vVendas(C){
   let vs=C.vendas.slice(); if(f!=='todas') vs=vs.filter(v=>v.forma===f);
   vs.sort((a,b)=>a.date.localeCompare(b.date)||a.cliente.localeCompare(b.cliente));
   const formas=[...new Set(C.vendas.map(v=>v.forma))];
-  return `<h1 class="page">Vendas</h1><p class="lede">Vendas no Pix e transferência devem aparecer no extrato (só é cobrado nos dias com extrato importado). Dinheiro e cartão ficam no caixa e na maquininha; a prazo vira recebimento.</p>
+  return `<h1 class="page">Vendas</h1><p class="lede">Vendas no Pix e transferência devem aparecer no extrato (só é cobrado nos dias com extrato importado). Dinheiro, cartão e cheque ficam no caixa, na maquininha e com os cheques; a prazo vira recebimento.</p>
     <div class="toolbar">${chips('vendas',[['todas',`Todas (${C.vendas.length})`],...formas.map(x=>[x,`${x} (${C.vendas.filter(v=>v.forma===x).length})`])],f)}<span class="sp"></span><button class="btn" data-act="addvenda">Cadastrar venda</button></div>
     ${tabela(vs.map(linhaVenda),{fid:'vendas'})}`;
 }
@@ -749,7 +763,7 @@ const COR_COND={'Pix':'#2C8A5E','Dinheiro':'#C99A1E','Cartão':'#2C5A86','Boleto
 const COR_PRAZO=['#D2691E','#B5472E','#E6954F','#9C3D1F','#F2B26B','#C4553A','#7E3A1C'];
 function condicaoGrupo(v){
   const t=norm(v.formaTxt||'');
-  if(v.forma==='Pix') return 'Pix'; if(v.forma==='Dinheiro') return 'Dinheiro'; if(v.forma==='Cartão') return 'Cartão';
+  if(v.forma==='Pix') return 'Pix'; if(v.forma==='Dinheiro') return 'Dinheiro'; if(v.forma==='Cartão') return 'Cartão'; if(v.forma==='Cheque') return 'Cheque';
   if(/BOLETO/.test(t)) return 'Boleto';
   if(v.forma==='Transferência') return 'Transferência';
   if(v.forma==='A prazo'){ let m=t.match(/\b(\d{1,3}(?:\/\d{1,3})+)\b/); if(m) return m[1]+' DD'; m=t.match(/\b(\d{1,3})\s*(DIAS|DIA|DD|D)\b/); if(m) return m[1]+' DD'; return 'A prazo (outros)'; }
@@ -922,7 +936,8 @@ function vDia(C){
   const eD=D.entradas.filter(e=>e.date===d), vD=D.vendas.filter(v=>v.date===d), rD=D.receber.filter(r=>r.baixado&&r.dataBaixa===d);
   const LI=C.LI;
   const eS=eD.filter(e=>e.banco!=='Bradesco'), eB=eD.filter(e=>e.banco==='Bradesco');
-  const pdfs=[['Extrato Sicoob',eS.length,`${eS.length} entrada(s)`],['Extrato Bradesco',eB.length,`${eB.length} entrada(s)`],['Listar Pedido por Data',vD.length,`${vD.length} venda(s)`],['Contas a Receber (pagos no dia)',rD.length,`${rD.length} título(s) de vendas anteriores`]];
+  const passoBanco=(b,es)=>{ const n=es.filter(e=>e.st!=='out').length, o=es.length-n; return [`Extrato ${b}`,es.length||extratoCobre(b,d)?1:0,(n?`${n} entrada(s)`:'Importado · nenhuma entrada de venda no dia')+(o?` · ${o} outra(s) (rendimento/transferência)`:'')]; };
+  const pdfs=[passoBanco('Sicoob',eS),passoBanco('Bradesco',eB),['Listar Pedido por Data',vD.length,`${vD.length} venda(s)`],['Contas a Receber (pagos no dia)',rD.length,`${rD.length} título(s) de vendas anteriores`]];
   const faltam=pdfs.filter(p=>!p[1]).length;
   // pendências do dia do lado do sistema
   const vendasPend=vD.filter(v=>(v.forma==='Pix'||v.forma==='Transferência'||v.forma==='Outros')&&!LI[v.id]);
@@ -958,7 +973,7 @@ function vDia(C){
     <section class="block"><h2>2. Resumo do dia</h2><div class="minis">
       ${kpi('Vendas',money(C.tVendas),'','vendas')}${kpi('Entrou no banco',money(C.tEntradas),'','entradas')}${kpi('🟢 Conciliado',money(sum(C.ok)),'g','ok')}
       ${kpi('🟡 Conferir',money(sum(C.conf)),'a','conf')}${kpi('🔴 Não identificado',money(sum(C.ni)),'r','ni')}${kpi('Baixas sem forma',money(C.porForma[BSB].total),C.porForma[BSB].total?'a':'','forma',BSB)}
-      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${C.cielo.length?(()=>{ const ref=addDays(d,-1), c=cartoesDoDia(ref), rec=sum(C.cielo); return `<button class="mini" data-act="det" data-k="cielo"><span>Cielo · cartões de ${brs(ref)}</span><b>${money(rec)}</b><span>vendido ${money(c.total)} · dif. ${money(c.total-rec)}</span></button>`; })():''}${(()=>{ const ps=rD.filter(r=>r.parcial); return ps.length?`<button class="mini a" data-act="det" data-k="parciais"><span>🟠 Pagos parcial (${ps.length})</span><b>${money(sum(ps))}</b><span>falta ${money(ps.reduce((a,r)=>a+(r.saldo||0),0))}</span></button>`:''; })()}${kpi('🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),'','serv')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
+      ${kpi('Dinheiro (caixa)',money(C.porForma['Dinheiro'].total),'','forma','Dinheiro')}${kpi('Cartão (maquininha)',money(C.porForma['Cartão'].total),'','forma','Cartão')}${kpi('Cheque',money(C.porForma['Cheque'].total),'','forma','Cheque')}${C.cielo.length?(()=>{ const ref=addDays(d,-1), c=cartoesDoDia(ref), rec=sum(C.cielo); return `<button class="mini" data-act="det" data-k="cielo"><span>Cielo · cartões de ${brs(ref)}</span><b>${money(rec)}</b><span>vendido ${money(c.total)} · dif. ${money(c.total-rec)}</span></button>`; })():''}${(()=>{ const pg=D.entradas.filter(e=>e.cielo&&e.st==='ok'&&(e.refDia||diaCartoes(e))===d); if(!pg.length) return ''; const c=cartoesDoDia(d), rec=sum(pg); return `<div class="mini"><span>Cartões deste dia · Cielo pagou em ${[...new Set(pg.map(e=>brs(e.date)))].join(', ')}</span><b>${money(rec)}</b><span>vendido ${money(c.total)} · dif. ${money(c.total-rec)}</span></div>`; })()}${(()=>{ const ps=rD.filter(r=>r.parcial); return ps.length?`<button class="mini a" data-act="det" data-k="parciais"><span>🟠 Pagos parcial (${ps.length})</span><b>${money(sum(ps))}</b><span>falta ${money(ps.reduce((a,r)=>a+(r.saldo||0),0))}</span></button>`:''; })()}${kpi('🔵 Serviços',money(sum(C.serv)+sum(C.servMan)),'','serv')}${kpi('Pix',money(C.porForma['Pix'].total),'','forma','Pix')}${kpi('Transferência / boleto',money(C.porForma['Transferência'].total+C.porForma['Boleto'].total+C.porForma['Depósito'].total),'','forma','Transferência|Boleto|Depósito')}</div></section>
     ${graficoCondicoes(C,'Vendas do dia por condição de pagamento')}
     <section class="block"><h2>3. Vincular</h2><p class="sub">À esquerda, o dinheiro que entrou no banco. À direita, quem pagou: escolha a venda ou o título e toque em Vincular.</p>
       <div class="board"><div class="col">${esquerda}</div><div class="col">${direita}</div></div></section>
@@ -1009,33 +1024,39 @@ function lerExtrato(L){
     if(dm){ if(cur&&!cur.skip&&!cur.doc) cur.doc=dm[1].trim(); continue; }
     if(cur&&!cur.skip) cur.det=(cur.det?cur.det+' ':'')+l.replace(/ \| /g,' ');
   }
-  const seen={};
-  return {saidas,items:it.map(x=>{ const base=`${x.date}|${x.doc}|${x.valor}|${pnorm(x.det).slice(0,60)}`; seen[base]=(seen[base]||0)+1;
+  const seen={}; const pi=L.map(l=>/Per[ií]odo:.*?(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})/i.exec(l.replace(/\|/g,' '))).find(Boolean);
+  return {saidas,cob:pi?{banco:'Sicoob',de:b2i(pi[1]),ate:b2i(pi[2])}:null,items:it.map(x=>{ const base=`${x.date}|${x.doc}|${x.valor}|${pnorm(x.det).slice(0,60)}`; seen[base]=(seen[base]||0)+1;
     return {col:'entradas',id:'e'+hashStr(base+'#'+seen[base]),banco:'Sicoob',date:x.date,valor:x.valor,desc:(x.hist+(x.det?' · '+x.det:'')).trim(),pagador:pagadorDe(x.det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+x.det)}; })};
 }
-// Extrato Bradesco Net Empresa: cada lançamento ocupa 3 linhas (título / data-doc-valor-saldo / detalhe); só créditos
+// Extrato Bradesco Net Empresa ("Extrato Mensal / Por Período" e "Últimos Lançamentos"): só créditos.
+// Lançamento em 3 linhas (título / data-doc-valor-saldo / detalhe) ou numa linha só (data | título | doc | valor | saldo).
 function lerBradesco(L){
-  const it=[]; let on=false, data=null, ultimo='', cur=null, saidas=0;
-  for(const raw of L){ const l=raw.replace(/\s*\|\s*/g,' | ').trim();
-    if(/^Data \| Lan[çc]amento \| Dcto/i.test(l)){ on=true; cur=null; ultimo=''; continue; }
+  const it=[]; let on=false, data=null, ultimo='', cur=null, saidas=0, cobDe=null, cobAte=null;
+  const op=L.map(l=>/Data da opera[çc][ãa]o:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(l)).find(Boolean);
+  const viu=d=>{ if(!d) return; if(!cobDe||d<cobDe) cobDe=d; if(!cobAte||d>cobAte) cobAte=d; };
+  for(const raw of L){ const l=raw.replace(/\s*\|\s*/g,' | ').trim(); let m;
+    if(/^Data \| Lan[çc]amento \| Dcto\..*Saldo/i.test(l)){ on=true; cur=null; ultimo=''; continue; }
+    if(/^(Lan[çc]amentos Futuros|Saldos Invest|Os dados acima)/i.test(l)){ on=false; cur=null; continue; }
     if(!on) continue;
-    if(/^Saldos Invest|^Os dados acima/i.test(l)){ on=false; cur=null; continue; }
-    let m;
-    if((m=/^(\d{2}\/\d{2}\/\d{4}) \| SALDO/i.exec(l))||/^Total \|/i.test(l)){ cur=null; ultimo=''; continue; }
-    if((m=/^(?:(\d{2}\/\d{2}\/\d{4}) \| )?(\d+) \| (-?[\d.]+,\d{2}) \| (-?[\d.]+,\d{2})$/.exec(l))){
-      if(m[1]) data=b2i(m[1]); const v=pMoney(m[3]);
-      if(v<0||!data){ saidas++; cur={skip:true}; ultimo=''; continue; }
-      cur={date:data,doc:m[2],hist:ultimo,det:'',valor:v}; it.push(cur); ultimo=''; continue; }
-    if(cur&&!cur.temDet){ cur.det=l.replace(/ \| /g,' '); cur.temDet=true; continue; }
+    if((m=/^(\d{2}\/\d{2}\/\d{4}) \| SALDO ANTERIOR/i.exec(l))){ viu(addDays(b2i(m[1]),1)); cur=null; ultimo=''; continue; }
+    if(/^Total \|/i.test(l)){ cur=null; ultimo=''; continue; }
+    m=/^(?:(\d{2}\/\d{2}\/\d{4}) \| )?(?:(.*?[A-Za-zÀ-ú].*?) \| )?(\d+) \| (-?[\d.]+,\d{2}) \| (-?[\d.]+,\d{2})$/.exec(l);
+    if(m){ if(m[1]){ data=b2i(m[1]); viu(data); } const v=pMoney(m[4]); const inline=!!m[2];
+      const hist=inline?m[2].replace(/ \| /g,' '):ultimo; ultimo='';
+      if(v<0||!data){ saidas++; cur=inline?null:{skip:true,temDet:false}; continue; }
+      cur={date:data,doc:m[3],hist,det:'',valor:v,temDet:inline}; it.push(cur); if(inline) cur=null; continue; }
+    if(cur&&!cur.temDet){ if(!cur.skip) cur.det=l.replace(/ \| /g,' '); cur.temDet=true; cur=null; continue; }
     ultimo=l.replace(/ \| /g,' '); cur=null;
   }
+  if(op){ const d=b2i(op[1]); if(!cobAte||d>cobAte) cobAte=d; }
   const seen={};
-  return {saidas,items:it.map(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; seen[base]=(seen[base]||0)+1;
+  return {saidas,cob:cobDe?{banco:'Bradesco',de:cobDe,ate:cobAte}:null,items:it.map(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; seen[base]=(seen[base]||0)+1;
     const det=x.det.replace(/\s\d{2}\/\d{2}$/,'');
     return {col:'entradas',id:'b'+hashStr(base+'#'+seen[base]),banco:'Bradesco',date:x.date,valor:x.valor,desc:(x.hist+(det?' · '+det:'')).trim(),pagador:pagadorDe(det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+det)}; })};
 }
 // "Pedido - Por Data" (CGI): cada forma de pagamento vira uma linha de venda; parcelas a prazo futuras viram recebimentos previstos
 function formaPag(cond,venc,date){ const c=pnorm(cond);
+  if(/CHEQUE|\bCHQ\b/.test(c)) return 'Cheque';
   if(/CARTAO/.test(c)) return 'Cartão';
   if(venc&&date&&venc>date) return 'A prazo';
   if(/PIX/.test(c)) return 'Pix'; if(/DINHEIRO|ESPECIE/.test(c)) return 'Dinheiro'; if(/DEPOSITO|TRANSF/.test(c)) return 'Transferência';
@@ -1112,15 +1133,15 @@ function deduplicar(){
   return fora.size;
 }
 async function importarPdfs(files){
-  reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set();
+  reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set(); const coberturas=[]; const datasVenda=[];
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
   const add=(col,x)=>{ const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; Object.assign(ex,x,col==='entradas'?keep:{}); touch(col,ex); return 0; }
-    if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
+    if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(rendimento(x)){ x.st='out'; x.motivo='Rendimento de aplicação (Invest Fácil)'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
-      if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s) ignorada(s)`); }
+      if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; if(r.cob){ coberturas.push(r.cob); } const ign=r.items.filter(ignorarEntrada).length; r.items=r.items.filter(x=>!ignorarEntrada(x)); r.saidas+=0; r.ign=ign; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s)${r.ign?` e ${r.ign} Cielo/cheque`:''} ignorada(s)`); }
       else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const {vendas,receber}=pedidosParaItens(r.ped);
-        vendas.forEach(x=>{ nV+=add('vendas',x); datas.push(x.date); }); receber.forEach(x=>{ if(!D.receber.some(y=>y.id===x.id)) nR+=add('receber',x); });
+        vendas.forEach(x=>{ nV+=add('vendas',x); datas.push(x.date); datasVenda.push(x.date); }); receber.forEach(x=>{ if(!D.receber.some(y=>y.id===x.id)) nR+=add('receber',x); });
         const tot=sum(r.ped,p=>p.total); const conf=r.meta?(r.meta.n===r.ped.length&&r.meta.total===tot?' (confere com o total do relatório)':` (relatório indica ${r.meta.n} pedidos)`):'';
         res.push(`Vendas: ${r.ped.length} pedido(s), ${money(tot)}${conf}`); }
       else if(t==='receber'){ const items=lerReceber(L); items.forEach(x=>{ nR+=add('receber',x); });
@@ -1130,10 +1151,16 @@ async function importarPdfs(files){
   }
   const lend=$('#lendo'); if(lend) lend.remove();
   if(!res.length){ toast(`Não reconheci ${erros.join(', ')}. Envie o extrato Sicoob ou Bradesco, o Listar Pedido por Data ou o Contas a Receber em PDF.`,7000); return; }
+  for(const cb of coberturas) await registrarCobertura(cb);
   deduplicar(); reindex(); aplicarAjustes(); const c=conciliarAuto(); await flush();
   const dExt=datas.filter((d,i)=>datasExt.has(i)); const base=(dExt.length?dExt:datas).slice().sort();
   if(base.length){ S.de=dExt.length?base[0]:base[base.length-1]; S.ate=base[base.length-1]; S.quick=''; }
-  if(S.tab!=='dia'&&S.tab!=='painel') S.tab='dia'; if(base.length) S.dia=base[base.length-1]; render();
+  if(S.tab!=='dia'&&S.tab!=='painel') S.tab='dia';
+  // dia exibido: o das vendas importadas; só extrato → mantém o dia aberto se o extrato o cobre, senão o último dia com movimento
+  if(datasVenda.length) S.dia=datasVenda.slice().sort().pop();
+  else if(coberturas.length&&S.dia&&coberturas.some(cb=>S.dia>=cb.de&&S.dia<=cb.ate)) {}
+  else if(base.length) S.dia=base[base.length-1];
+  render();
   toast(res.join(' · ')+`. Conciliação: 🟢 ${c.ok||0} · 🟡 ${c.conf||0} · 🔴 ${c.ni||0}.`+(erros.length?` Não reconheci: ${erros.join(', ')}.`:''),9000);
 }
 function vImportar(){
@@ -1209,8 +1236,8 @@ function gerarPdf(){
     foot:[[{content:`${es.length} entrada(s)`,colSpan:4},m(sum(es)),'']],columnStyles:{0:{cellWidth:12},1:{cellWidth:20},3:{cellWidth:40},4:{halign:'right',cellWidth:22},5:{cellWidth:24}},
     didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }});
   // vendas dinheiro/cartão
-  const vc=C.vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão');
-  if(vc.length){ H('Vendas em dinheiro e cartão','Conferir com o caixa e a maquininha.');
+  const vc=C.vendas.filter(v=>v.forma==='Dinheiro'||v.forma==='Cartão'||v.forma==='Cheque');
+  if(vc.length){ H('Vendas em dinheiro, cartão e cheque','Conferir com o caixa, a maquininha e os cheques recebidos.');
     T({head:[['Data','Forma','Cliente','Venda','Valor']],body:vc.map(v=>[brs(v.date),v.forma,v.cliente,v.doc||'—',m(v.valor)]),foot:[[{content:`${vc.length} venda(s)`,colSpan:4},m(sum(vc))]],columnStyles:{0:{cellWidth:12},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===4) d.cell.styles.halign='right'; }}); }
   // a receber
   H('Recebimentos em aberto',`A vencer ${m(sum(C.previstos))} (${C.previstos.length}) · atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}). Posição em ${br(HOJE)}.`);
@@ -1294,7 +1321,7 @@ document.addEventListener('click',async ev=>{
       try{ const d=gerarPdf(); await baixar(S.de===S.ate?`conciliacao-${S.de}.pdf`:`conciliacao-${S.de}-a-${S.ate}.pdf`,d.output('blob'),'application/pdf'); }catch(e){ console.error(e); toast('Não consegui gerar o PDF.'); } break; }
     case 'zerar': { if(!confirm('Apagar todas as entradas, vendas, recebimentos e conciliações? Não dá para desfazer.')) break;
       for(const col of COLS){ D[col]=[]; } for(const c in dirty) dirty[c].clear(); if(!db){ for(let i=localStorage.length-1;i>=0;i--){ const k=localStorage.key(i); if(k&&k.startsWith('corr:')) localStorage.removeItem(k); } }
-      AJ.formas={}; AJ.conc={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('corr:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
+      AJ.formas={}; AJ.conc={}; AJ.cob={}; if(db){ try{ for(const col of COLS){ const sn=await db.collection(col).get(); const refs=sn.docs.map(d=>d.ref); for(let i=0;i<refs.length;i+=400){ const b=db.batch(); refs.slice(i,i+400).forEach(r=>b.delete(r)); await b.commit(); } } await db.doc('ajustes/manual').delete(); }catch(e){ toast('Não consegui limpar o Firebase: '+traduzErro(e)); break; } } else { try{ localStorage.removeItem('corr:ajustes'); }catch(e){} } render(); toast('Todos os dados foram apagados.'); break; }
     case 'recarregar': recarregarDaPlanilha(false); break;
     case 'bkexp': { const bk={app:'conciliacao-pagil',versao:1,gerado:new Date().toISOString(),dados:{entradas:D.entradas,vendas:D.vendas,receber:D.receber,servicos:D.servicos},ajustes:AJ};
       const limpo=JSON.stringify(bk,(k,v)=>k&&k[0]==='_'?undefined:v); await baixar(`backup-conciliacao-${HOJE}.json`,limpo,'application/json'); break; }
@@ -1332,9 +1359,9 @@ async function importarBackup(txt){
   if(!confirm(`Importar ${n} lançamento(s) do backup? Os dados atuais serão substituídos.`)) return;
   toast('Importando o backup…',20000);
   for(const col of COLS){ D[col]=(bk.dados[col]||[]).map(x=>Object.assign(x,{col})); }
-  const aj=bk.ajustes||{}; AJ.formas=aj.formas||{}; AJ.conc=aj.conc||{};
+  const aj=bk.ajustes||{}; AJ.formas=aj.formas||{}; AJ.conc=aj.conc||{}; AJ.cob=aj.cob||{};
   reindex(); for(const col of COLS){ new Set(D[col].map(x=>gkey(col,x))).forEach(k=>markDirty(col,k)); }
-  for(const c of ['formas','conc']) for(const id in AJ[c]) pendAJ.add(c+':'+id);
+  for(const c of ['formas','conc','cob']) for(const id in AJ[c]) pendAJ.add(c+':'+id);
   await flush(); await enviarAjustes(); aplicarAjustes(); render();
   if(Sync.state==='err'){ toast('O backup não foi gravado por completo. Toque em "tentar de novo" no topo.',8000); return; }
   toast(`Backup importado: ${n} lançamento(s).`);
@@ -1349,7 +1376,7 @@ $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='imp
   if(est==='config'){ telaConfig(); return; } if(est==='login'){ telaLogin(); return; }
   try{ await Store.init(); }catch(e){ telaLogin('Não consegui ler os dados: '+traduzErro(e)); return; }
   for(const col of COLS){ D[col]=await Store.loadAll(col); D[col].forEach(x=>x.col=col); }
-  reindex(); await carregarAjustes(); aplicarAjustes(); syncUI();
+  reindex(); await carregarAjustes(); aplicarAjustes(); limparIgnorados(); syncUI();
   if(D.entradas.length||D.vendas.length){ const ds=[...D.entradas.map(e=>e.date),...D.vendas.map(v=>v.date)].filter(d=>d<=HOJE).sort(); if(ds.length&&!ds.includes(HOJE)) S.dia=ds[ds.length-1]; setQuick('mes'); if(!ds.some(d=>d>=S.de)) { setQuick('tudo'); } }
   render(); ouvirTempoReal();
 })();
