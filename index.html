@@ -596,7 +596,18 @@ function candidatos(e,LI,livres=true){
     out.push({x:r,tipo:'receber',valorOk:r.valor===e.valor||(!!r.valorAlt&&r.valorAlt===e.valor),ns:nomeScore(r.cliente,pag+' '+e.desc),dd}); }
   return out;
 }
+// Doc. Nº / pedido "01.xxxxxx" é da Pagil (os da Correa são "02.xxxxxx"): nunca entra neste app
+const ehDaPagil=x=>/^01\./.test(String(x.pedido||(x.col!=='entradas'?x.doc:'')||'').trim());
+function apagarDaPagil(){
+  const fora=[...D.vendas,...D.receber].filter(ehDaPagil); if(!fora.length) return 0;
+  const ids=new Set(fora.map(x=>x.id)); fora.forEach(x=>touch(x.col,x));
+  D.vendas=D.vendas.filter(x=>!ids.has(x.id)); D.receber=D.receber.filter(x=>!ids.has(x.id));
+  D.entradas.forEach(e=>{ if(e.links&&e.links.some(i=>ids.has(i))){ e.links=e.links.filter(i=>!ids.has(i)); if(!e.links.length&&e.st!=='out'&&e.st!=='serv'){ e.st='ni'; e.auto=false; e.manual=false; e.motivo=''; } touch('entradas',e); } });
+  for(const eid in AJ.conc){ const a=AJ.conc[eid]; if(a&&a.links&&a.links.some(i=>ids.has(i))){ const l=a.links.filter(i=>!ids.has(i)); gravarAjuste('conc',eid,Object.assign({},a,{links:l,st:l.length||a.st!=='ok'?a.st:'ni',t:new Date().toISOString()})); } }
+  reindex(); return fora.length;
+}
 function limparIgnorados(){
+  const nPagil=apagarDaPagil(); if(nPagil&&!S._avisoPagil){ S._avisoPagil=true; setTimeout(()=>toast(`${nPagil} lançamento(s) da Pagil (Doc. Nº 01.…) foram retirados da Correa.`,8000),600); }
   deduplicarPorPedido();
   const fora=D.entradas.filter(ignorarEntrada); if(fora.length){ D.entradas=D.entradas.filter(e=>!ignorarEntrada(e)); fora.forEach(e=>touch('entradas',e)); reindex(); }
     D.receber.forEach(r=>{ if(r.origem!=='contas'||!r.baixado||r.valorPago!=null) return; if(r.juros&&r.valorAlt&&r.valor===r.valorAlt+r.juros){ r.valor=r.valorAlt; } r.valorAlt=!r.parcial&&r.valorTit&&r.valorTit!==r.valor?r.valorTit:0; r.valorPago=r.valor; touch('receber',r); });
@@ -1237,10 +1248,10 @@ async function importarPdfs(files){
       if(empresaPdf(L)==='pagil'){ erros.push(`${f.name} (é da Pagil, não da Correa)`); continue; }
       if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; if(r.cob){ coberturas.push(r.cob); } const ign=r.items.filter(ignorarEntrada).length; r.items=r.items.filter(x=>!ignorarEntrada(x)); r.saidas+=0; r.ign=ign; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s)${r.ign?` e ${r.ign} Cielo/cheque`:''} ignorada(s)`); }
       else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const {vendas,receber}=pedidosParaItens(r.ped);
-        const sp=substituirPedidos(vendas,receber,add); nV+=sp.n; sp.aceitas.forEach(x=>{ datas.push(x.date); datasVenda.push(x.date); });
+        const vPag=vendas.filter(ehDaPagil).length; if(vPag) erros.push(`${vPag} pedido(s) da Pagil em ${f.name}`); const sp=substituirPedidos(vendas.filter(x=>!ehDaPagil(x)),receber.filter(x=>!ehDaPagil(x)),add); nV+=sp.n; sp.aceitas.forEach(x=>{ datas.push(x.date); datasVenda.push(x.date); });
         const tot=sum(r.ped,p=>p.total); const conf=r.meta?(r.meta.n===r.ped.length&&r.meta.total===tot?' (confere com o total do relatório)':` (relatório indica ${r.meta.n} pedidos)`):'';
         res.push(`Vendas: ${r.ped.length} pedido(s), ${money(tot)}${conf}${sp.movidos?` · ${sp.movidos} pedido(s) mudaram para a data nova`:''}${sp.antigos?` · ${sp.antigos} pedido(s) ignorados (já existem com data mais recente)`:''}`); }
-      else if(t==='receber'){ const items=lerReceber(L); items.forEach(x=>{ nR+=add('receber',x); });
+      else if(t==='receber'){ const todos=lerReceber(L), items=todos.filter(x=>!ehDaPagil(x)); if(todos.length>items.length) erros.push(`${todos.length-items.length} título(s) da Pagil em ${f.name}`); items.forEach(x=>{ nR+=add('receber',x); });
         const ab=items.filter(x=>!x.baixado); res.push(`Contas a receber: ${ab.length} em aberto${items.length-ab.length?`, ${items.length-ab.length} já baixado(s)`:''}${recMovidos?` · ${recMovidos} título(s) atualizados para a data nova`:''}${recAntigos?` · ${recAntigos} ignorado(s) (já existem com data mais recente)`:''}`); recMovidos=0; recAntigos=0; }
       else erros.push(f.name);
     }catch(e){ console.error(e); erros.push(f.name); }
