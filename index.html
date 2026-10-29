@@ -228,6 +228,7 @@ body.conectando header .period,body.conectando #quick,body.conectando nav.tabs,b
 <div id="toast" class="toast" hidden></div>
 <input type="file" id="fileInput" accept="application/pdf,.pdf,.json,application/json,text/plain" multiple hidden>
 <input type="file" id="bkInput" hidden>
+<input type="file" id="rmInput" accept="application/pdf,.pdf" multiple hidden>
 <script>
 /* ============ utilidades ============ */
 const $=s=>document.querySelector(s);
@@ -261,9 +262,9 @@ function cartoesDoDia(d){ const vs=D.vendas.filter(v=>v.forma==='Cartão'&&v.dat
   return {total:sum(vs)+sum(rs),n:vs.length+rs.length}; }
 
 // dias cobertos por cada extrato importado (para saber que o extrato do dia veio, mesmo sem crédito)
-const extratoCobre=(banco,d)=>!!AJ.cob[banco+'_'+d];
+const extratoCobre=(banco,d)=>{ const a=AJ.cob[banco+'_'+d]; return !!a&&!a.off; };
 async function registrarCobertura(c){ if(!c||!c.de||!c.ate) return; const t=new Date().toISOString();
-  for(let d=c.de, n=0; d<=c.ate&&n<62; d=addDays(d,1), n++){ const k=c.banco+'_'+d; if(!AJ.cob[k]) await gravarAjuste('cob',k,{t}); } }
+  for(let d=c.de, n=0; d<=c.ate&&n<62; d=addDays(d,1), n++){ const k=c.banco+'_'+d; if(!AJ.cob[k]||AJ.cob[k].off) await gravarAjuste('cob',k,{t}); } }
 
 /* ============ pedido/título que muda de data (nota editada ou gerada depois) ============ */
 // Títulos do Contas a Receber são identificados pelo Doc. Nº (número do pedido) + parcela.
@@ -465,7 +466,7 @@ function aplicarAjustes(){
 }
 function mesclarAjustes(rem){ let mudou=false;
   for(const c of ['formas','conc','cob']){ const R=(rem&&rem[c])||{}; for(const id in R){ if(pendAJ.has(c+':'+id)) continue; const L=AJ[c][id];
-    if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } } }
+    if(!R[id]) continue; if(!L||String(R[id].t||'')>String(L.t||'')){ if(JSON.stringify(L)!==JSON.stringify(R[id])){ AJ[c][id]=R[id]; mudou=true; } } } }
   return mudou; }
 async function gravarAjuste(campo,id,valor){
   AJ[campo][id]=valor; const pk=campo+':'+id; pendAJ.add(pk); Sync.state='pend'; syncUI();
@@ -1190,6 +1191,39 @@ function deduplicar(){
   if(fora.size) D.receber=D.receber.filter(r=>!fora.has(r.id));
   return fora.size;
 }
+// de qual empresa é o PDF (pelo cabeçalho): evita jogar PDF da Pagil na Correa
+function empresaPdf(L){ const h=norm(L.slice(0,10).join(' ')); if(/CORREA AUTO PECAS/.test(h)) return 'correa'; if(/PAGIL/.test(h)) return 'pagil'; return ''; }
+// lê um PDF e devolve os lançamentos que ele gera (mesma leitura da importação)
+function itensDoPdf(L){ const t=tipoPdf(L); const out={tipo:t,entradas:[],vendas:[],receber:[],cob:null};
+  if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); out.entradas=r.items; out.cob=r.cob; }
+  else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const pr=pedidosParaItens(r.ped); out.vendas=pr.vendas; out.receber=pr.receber; }
+  else if(t==='receber'){ out.receber=lerReceber(L); }
+  return out; }
+// desfazer: solte de novo os PDFs importados por engano e o app apaga exatamente o que veio deles
+async function removerPdfs(files){
+  reindex(); const alvo=new Set(), covs=[], nomes=[], erros=[];
+  for(const f of files){
+    try{ const L=await pdfLines(f); const it=itensDoPdf(L); if(!it.tipo){ erros.push(f.name); continue; } nomes.push(f.name); if(it.cob) covs.push(it.cob);
+      it.entradas.forEach(x=>{ const e=IDX[x.id]; if(e&&e.col==='entradas'&&e.valor===x.valor) alvo.add(e); });
+      it.vendas.forEach(x=>{ const v=IDX[x.id]; if(v&&v.col==='vendas'&&v.pedido===x.pedido&&norm(v.cliente)===norm(x.cliente)) alvo.add(v); });
+      it.receber.forEach(x=>{ const k=x.origem==='contas'?bizRec(x):null;
+        D.receber.forEach(r=>{ if((r.id===x.id||(k&&r.origem==='contas'&&bizRec(r)===k))&&norm(r.cliente)===norm(x.cliente)) alvo.add(r); }); });
+    }catch(e){ console.error(e); erros.push(f.name); }
+  }
+  if(!alvo.size){ toast(`Nenhum lançamento desses PDFs está salvo no app${erros.length?` (não reconheci: ${erros.join(', ')})`:''}.`,7000); return; }
+  const cnt=c=>[...alvo].filter(x=>x.col===c); const ve=cnt('vendas'), en=cnt('entradas'), re=cnt('receber');
+  if(!confirm(`Remover o que veio de ${nomes.length} PDF(s)?\n\n• ${ve.length} venda(s) · ${money(sum(ve))}\n• ${en.length} entrada(s) no banco · ${money(sum(en))}\n• ${re.length} título(s) · ${money(sum(re))}\n\nIsso apaga esses lançamentos do app (e do Firebase).`)) return;
+  const ids=new Set([...alvo].map(x=>x.id));
+  alvo.forEach(x=>touch(x.col,x));
+  for(const c of ['entradas','vendas','receber']) D[c]=D[c].filter(x=>!alvo.has(x));
+  // entradas que estavam ligadas a vendas/títulos removidos voltam a ficar sem vínculo
+  D.entradas.forEach(e=>{ if(e.links&&e.links.some(i=>ids.has(i))){ e.links=e.links.filter(i=>!ids.has(i)); if(!e.links.length&&e.st!=='out'&&e.st!=='serv'){ e.st='ni'; e.auto=false; e.manual=false; e.motivo=''; } touch('entradas',e); } });
+  for(const eid in AJ.conc){ const a=AJ.conc[eid]; if(!a) continue; if(ids.has(eid)||(a.links&&a.links.some(i=>ids.has(i)))){ const l=(a.links||[]).filter(i=>!ids.has(i)); await gravarAjuste('conc',eid,Object.assign({},a,{links:l,st:ids.has(eid)?'ni':(l.length||a.st!=='ok'?a.st:'ni'),t:new Date().toISOString()})); } }
+  // extrato removido: o dia deixa de contar como "extrato importado" se não sobrou entrada daquele banco
+  for(const c of covs){ for(let d=c.de,n=0; d<=c.ate&&n<62; d=addDays(d,1),n++){ const k=c.banco+'_'+d; if(AJ.cob[k]&&!AJ.cob[k].off&&!D.entradas.some(e=>(e.banco||'Sicoob')===c.banco&&e.date===d)) await gravarAjuste('cob',k,{t:new Date().toISOString(),off:true}); } }
+  reindex(); aplicarAjustes(); conciliarAuto(); await flush(); render();
+  toast(`Removido: ${ve.length} venda(s), ${en.length} entrada(s) e ${re.length} título(s).`,8000);
+}
 async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set(); const coberturas=[]; const datasVenda=[];
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
@@ -1200,6 +1234,7 @@ async function importarPdfs(files){
     if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(rendimento(x)){ x.st='out'; x.motivo='Rendimento de aplicação (Invest Fácil)'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
+      if(empresaPdf(L)==='pagil'){ erros.push(`${f.name} (é da Pagil, não da Correa)`); continue; }
       if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; if(r.cob){ coberturas.push(r.cob); } const ign=r.items.filter(ignorarEntrada).length; r.items=r.items.filter(x=>!ignorarEntrada(x)); r.saidas+=0; r.ign=ign; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s)${r.ign?` e ${r.ign} Cielo/cheque`:''} ignorada(s)`); }
       else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const {vendas,receber}=pedidosParaItens(r.ped);
         const sp=substituirPedidos(vendas,receber,add); nV+=sp.n; sp.aceitas.forEach(x=>{ datas.push(x.date); datasVenda.push(x.date); });
@@ -1234,6 +1269,8 @@ function vImportar(){
     <div class="panel"><h3>Vendas</h3><p>CGI → Listar Pedido por Data (ou o PDF de um pedido). Pix e transferência são cruzados com o banco; parcelas a prazo futuras entram como recebimentos previstos.</p><p class="statusline">${q('vendas')}</p></div>
     <div class="panel"><h3>Recebimentos</h3><p>CGI → Contas a Receber. Em aberto viram previstos ou atrasados; títulos já baixados são ligados ao Pix que os pagou.</p><p class="statusline">${q('receber')}</p></div>
   </div>
+  <section class="block"><h2>Importou um PDF errado?</h2><p class="sub">Solte de novo os mesmos PDFs (ex.: os da Pagil). O app mostra o que veio deles e, se você confirmar, apaga só esses lançamentos. O resto continua como está.</p>
+    <div class="toolbar"><button class="btn" data-act="rmpick">Remover PDFs importados por engano</button></div></section>
   <section class="block"><h2>Dados</h2><p class="sub">${db?`Tudo fica gravado no Firebase (projeto <b>${esc(FBCFG.projectId)}</b>) e aparece na hora em todos os aparelhos. Conectado como <b>${esc(usuario&&usuario.email||'')}</b>.`:'Modo de teste: os dados ficam só neste navegador.'}</p>
     <div class="toolbar"><button class="btn" data-act="recarregar">Recarregar dados</button>${db?'<button class="btn" data-act="fbsair">Sair da conta</button>':'<button class="btn" data-act="fbsair">Conectar ao Firebase</button>'}<button class="btn" data-act="auto">Refazer conciliação automática</button><button class="btn" data-act="bkexp">Exportar backup</button><button class="btn" data-act="bkimp">Importar backup</button><button class="btn danger" data-act="zerar">Apagar todos os dados</button></div></section>`;
 }
@@ -1372,6 +1409,7 @@ document.addEventListener('click',async ev=>{
     case 'ccni': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[]; e.st='ni'; e.manual=true; e.motivo='Marcado manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); break; }
     case 'auto': { D.entradas.forEach(e=>{ if(e.st!=='ok'||e.auto){ if(!e.manual){ e.st='ni'; e.links=[]; } } }); const r=conciliarAuto(); render(); toast(`Conciliação: 🟢 ${r.ok||0} · 🟡 ${r.conf||0} · 🔴 ${r.ni||0}.`); break; }
     case 'pick': $('#fileInput').click(); break;
+    case 'rmpick': $('#rmInput').click(); break;
     case 'addvenda': dlgCadastro('venda'); break;
     case 'addrec': dlgCadastro('receber'); break;
     case 'salvarcad': { const tipo=t.dataset.t; const cli=$('#mCli').value.trim(), pv=parseValor($('#mVal').value), dt=$('#mDt').value;
@@ -1427,6 +1465,7 @@ async function importarBackup(txt){
   if(Sync.state==='err'){ toast('O backup não foi gravado por completo. Toque em "tentar de novo" no topo.',8000); return; }
   toast(`Backup importado: ${n} lançamento(s).`);
 }
+$('#rmInput').addEventListener('change',async ev=>{ const f=[...ev.target.files].filter(x=>/pdf$/i.test(x.type)||/\.pdf$/i.test(x.name)); ev.target.value=''; if(f.length) await removerPdfs(f); });
 $('#bkInput').addEventListener('change',async ev=>{ const f=ev.target.files[0]; ev.target.value=''; if(f) receberArquivos([f]); });
 $('#dlg').addEventListener('close',()=>{ if(S._noRender) return; if(S.tab!=='importar'){ const k=guardarScroll(); render(); restaurarScroll(k); } });
 
