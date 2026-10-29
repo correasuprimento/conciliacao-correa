@@ -265,6 +265,61 @@ const extratoCobre=(banco,d)=>!!AJ.cob[banco+'_'+d];
 async function registrarCobertura(c){ if(!c||!c.de||!c.ate) return; const t=new Date().toISOString();
   for(let d=c.de, n=0; d<=c.ate&&n<62; d=addDays(d,1), n++){ const k=c.banco+'_'+d; if(!AJ.cob[k]) await gravarAjuste('cob',k,{t}); } }
 
+/* ============ pedido/título que muda de data (nota editada ou gerada depois) ============ */
+// Títulos do Contas a Receber são identificados pelo Doc. Nº (número do pedido) + parcela.
+const parcelaDe=r=>{ const m=/-(\d+)\s*$/.exec(String(r.titulo||'')); return m?m[1]:'001'; };
+const bizRec=r=>(r.pedido||r.doc||'')+'|'+parcelaDe(r)+(r.parcial?'|P|'+(r.dataBaixa||'')+'|'+(r.valorPago!=null?r.valorPago:r.valor):'');
+const recTs=r=>(r.emissao||'')+'|'+(r.baixado?(r.dataBaixa||'0'):'');
+const titRef=r=>{ const p=r.pedido||r.doc||'—'; return r.origem==='contas'&&r.titulo?`Pedido ${p} · parc. ${parcelaDe(r)}`:`Pedido ${p}`; };
+function remapLinks(mapa){ const ids=Object.keys(mapa); if(!ids.length) return;
+  D.entradas.forEach(e=>{ if(e.links&&e.links.some(i=>mapa[i])){ e.links=[...new Set(e.links.map(i=>mapa[i]||i))]; touch('entradas',e); } });
+  for(const eid in AJ.conc){ const a=AJ.conc[eid]; if(a&&a.links&&a.links.some(i=>mapa[i])) gravarAjuste('conc',eid,Object.assign({},a,{links:[...new Set(a.links.map(i=>mapa[i]||i))]})); }
+  for(const o in mapa){ if(AJ.formas[o]&&!AJ.formas[mapa[o]]) gravarAjuste('formas',mapa[o],AJ.formas[o]); } }
+// vale a versão mais recente: some da data antiga e fica só na data em que foi alterado
+function deduplicarPorPedido(){
+  const fora=new Set(), mapa={};
+  const grupo=(lista,chave)=>{ const g={}; lista.forEach(x=>{ const k=chave(x); if(k) (g[k]=g[k]||[]).push(x); }); return g; };
+  // vendas: por número do pedido, fica a data mais recente
+  const gv=grupo(D.vendas.filter(v=>v.pedido&&!/^vm/.test(v.id)),v=>v.pedido);
+  for(const p in gv){ const xs=gv[p]; if(xs.length<2) continue; const max=xs.reduce((a,v)=>v.date>a?v.date:a,'');
+    const ficam=xs.filter(v=>v.date===max), seen=new Set();
+    ficam.forEach(v=>{ if(seen.has(v.id)) fora.add(v); else seen.add(v.id); });
+    xs.filter(v=>v.date!==max).forEach(v=>{ fora.add(v); if(!seen.has(v.id)) mapa[v.id]=ficam[0].id; }); }
+  // títulos gerados pelo Listar Pedido (a prazo): ficam os da versão mais recente do pedido
+  const gr=grupo(D.receber.filter(r=>r.origem==='venda'&&r.pedido),r=>r.pedido);
+  for(const p in gr){ const xs=gr[p]; const max=xs.reduce((a,r)=>(r.emissao||'')>a?(r.emissao||''):a,''); xs.forEach(r=>{ if((r.emissao||'')!==max){ fora.add(r); mapa[r.id]=(xs.find(y=>(y.emissao||'')===max)||{}).id; } }); }
+  // títulos do Contas a Receber: Doc. Nº + parcela, fica o mais recente
+  const gc=grupo(D.receber.filter(r=>r.origem==='contas'),bizRec);
+  for(const k in gc){ const xs=gc[k]; if(xs.length<2) continue; xs.sort((a,b)=>recTs(b).localeCompare(recTs(a))); const fica=xs[0];
+    xs.slice(1).forEach(r=>{ fora.add(r); if(r.id!==fica.id) mapa[r.id]=fica.id; }); }
+  if(!fora.size) return 0;
+  fora.forEach(x=>touch(x.col,x));
+  D.vendas=D.vendas.filter(x=>!fora.has(x)); D.receber=D.receber.filter(x=>!fora.has(x));
+  reindex(); for(const o in mapa){ if(!mapa[o]||!IDX[mapa[o]]) delete mapa[o]; } remapLinks(mapa);
+  // regrava as datas que ficaram (o mesmo lançamento pode ter saído de um dia e continuar em outro)
+  D.vendas.forEach(v=>{ if(gv[v.pedido]&&gv[v.pedido].length>1) touch('vendas',v); });
+  return fora.size;
+}
+// importação do Listar Pedido: pedido que já existia em outra data muda para a data nova (ou é ignorado se a versão importada for mais antiga)
+function substituirPedidos(vendas,receber,add){
+  const porPed={}; vendas.forEach(v=>{ (porPed[v.pedido]=porPed[v.pedido]||[]).push(v); });
+  let n=0, movidos=0, antigos=0; const aceitos=new Set(), mapa={};
+  for(const p in porPed){ const novas=porPed[p], nd=novas[0].date;
+    const ex=D.vendas.filter(v=>v.pedido===p&&!/^vm/.test(v.id));
+    const exMax=ex.reduce((a,v)=>v.date>a?v.date:a,'');
+    if(exMax&&exMax>nd){ antigos++; continue; }
+    if(ex.some(v=>v.date!==nd)) movidos++;
+    const exR=D.receber.filter(r=>r.origem==='venda'&&r.pedido===p);
+    const idsNovos=new Set(novas.map(v=>v.id));
+    ex.forEach(v=>{ if(!idsNovos.has(v.id)) mapa[v.id]=novas[0].id; });
+    [...ex,...exR].forEach(x=>{ touch(x.col,x); delete IDX[x.id]; });
+    D.vendas=D.vendas.filter(v=>!ex.includes(v)); D.receber=D.receber.filter(r=>!exR.includes(r));
+    novas.forEach(v=>{ n+=add('vendas',v); }); aceitos.add(p); }
+  receber.forEach(r=>{ if(aceitos.has(r.pedido)&&!D.receber.some(y=>y.id===r.id)) add('receber',r); });
+  remapLinks(mapa);
+  return {n,movidos,antigos,aceitas:vendas.filter(v=>aceitos.has(v.pedido))};
+}
+
 /* ============ leitura de valores e datas ============ */
 function parseValor(v){
   if(v==null||v==='') return null;
@@ -541,7 +596,9 @@ function candidatos(e,LI,livres=true){
   return out;
 }
 function limparIgnorados(){
+  deduplicarPorPedido();
   const fora=D.entradas.filter(ignorarEntrada); if(fora.length){ D.entradas=D.entradas.filter(e=>!ignorarEntrada(e)); fora.forEach(e=>touch('entradas',e)); reindex(); }
+    D.receber.forEach(r=>{ if(r.origem!=='contas'||!r.baixado||r.valorPago!=null) return; if(r.juros&&r.valorAlt&&r.valor===r.valorAlt+r.juros){ r.valor=r.valorAlt; } r.valorAlt=!r.parcial&&r.valorTit&&r.valorTit!==r.valor?r.valorTit:0; r.valorPago=r.valor; touch('receber',r); });
     D.vendas.forEach(v=>{ if(v.forma==='Outros'&&/CHEQUE|\bCHQ\b/.test(pnorm(v.formaTxt||''))&&!AJ.formas[v.id]){ v.forma='Cheque'; touch('vendas',v); } });
 }
 function conciliarAuto(){
@@ -632,7 +689,7 @@ const ST={parcial:['conf','🟠 Pago parcial'],serv:['serv','🔵 Serviço'],ser
   caixa:['neu','Caixa (dinheiro)'],cheque:['neu','Cheque'],maq:['neu','Maquininha'],prazo:['neu','A prazo'],nao:['ni','🔴 Não entrou no banco'],
   semext:['neu','Sem extrato do dia'],aberto:['neu','Previsto'],atraso:['ni','🔴 Atrasado'],identificado:['ok','🟢 Identificado'],recebido:['ok','🟢 Recebido'],baixado:['conf','🟡 Forma não informada']};
 const stHtml=k=>{ const s=ST[k]||['neu',k]; return `<span class="st ${s[0]}">${esc(s[1])}</span>`; };
-function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:`Título ${x.doc||'—'}`; }
+function refDe(id){ const x=IDX[id]; if(!x) return 'lançamento removido'; return x.col==='vendas'?`Venda ${x.doc||'—'}`:titRef(x); }
 function clienteDaEntrada(e){ if(e.cielo&&e.st==='ok') return `Cartões de ${brs(e.refDia||diaCartoes(e))} (Cielo)`; if(e.links&&e.links.length){ const n=[...new Set(e.links.map(id=>IDX[id]&&IDX[id].cliente).filter(Boolean))]; if(n.length) return n.join(', '); } return e.pagador||'Não identificado'; }
 const ORIG={cartao:'Cartões (Cielo)',venda:'Vendas',titulo:'Títulos pagos',parcial:'Pagos parcial',serv:'Serviços',aberto:'Títulos em aberto',semvinc:'Sem vínculo'};
 function origemEntrada(e){ if(e.st==='serv') return 'serv'; if(e.cielo&&e.st==='ok') return 'cartao'; const xs=(e.links||[]).map(i=>IDX[i]).filter(Boolean); if(!xs.length) return 'semvinc';
@@ -646,7 +703,7 @@ function linhaVenda(v){ return {orig:'venda',cliente:v.cliente,sub:v.formaTxt||v
 function linhaServ(x){ return {orig:'serv',cliente:x.cliente,sub:x.desc||'Serviço',valor:x.valor,data:x.date,doc:'Serviço'+(x.doc?' '+x.doc:''),st:'servm',act:`data-act="servedit" data-id="${x.id}"`,forma:x.forma}; }
 function linhaItem(i,LI){ return i.k==='serv'?linhaServ(i.x):i.k==='venda'?linhaVenda(i.x):i.k==='rec'?Object.assign(linhaReceber(i.x,LI),{data:i.x.dataBaixa}):linhaEntrada(i.x); }
 function linhaReceber(r,LI){ const l=LI[r.id]; const st=r.parcial?'parcial':l&&l.st==='ok'?'recebido':r.baixado?(!r.formaRec?'baixado':'identificado'):r.venc<HOJE?'atraso':'aberto';
-  return {orig:origemReceber(r,LI),cliente:r.cliente,sub:(r.pedido?'Pedido '+r.pedido:'')+(r.juros?` · inclui juros ${money(r.juros)}`:'')+(r.parcial?` · pago ${money(r.valor)} de ${money(r.valorTit)} · falta ${money(r.saldo)}`:''),valor:r.valor,data:r.venc,doc:'Título '+(r.doc||'—'),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
+  return {orig:origemReceber(r,LI),cliente:r.cliente,sub:(r.titulo?'Título '+r.titulo:'')+(r.juros?` · juros ${money(r.juros)}`:'')+(r.parcial?` · pago ${money(r.valor)} de ${money(r.valorTit)} · falta ${money(r.saldo)}`:''),valor:r.valor,data:r.venc,doc:titRef(r),st,act:`data-act="alvo" data-id="${r.id}"`,item:r.baixado?r:null,
     extra:l?`${l.st==='ok'?'Pago':'Possível pagamento'} em ${brs(l.e.date)} · ${l.e.pagador||''}`:r.baixado?(!r.formaRec?`Baixado em ${brs(r.dataBaixa)} · escolha a forma de recebimento`:`Baixado em ${brs(r.dataBaixa)} · recebido em ${r.formaRec.toLowerCase()}`):(r.venc<HOJE?`${dayDiff(r.venc,HOJE)} dia(s) de atraso`:(r.venc===HOJE?'vence hoje':`vence em ${dayDiff(HOJE,r.venc)} dia(s)`))}; }
 
 /* ============ renderização ============ */
@@ -881,7 +938,7 @@ function desenhaConc(){ S.dlgKind='cc';
     <p class="statusline" style="margin:0 0 8px">${q?'Resultado da pesquisa (vendas e títulos em aberto).':'Sugestões: mesmo valor, cliente parecido ou data próxima. Marque uma ou mais.'}</p>
     ${cands.length?cands.map(k=>`<div class="cand ${S.cc.sel.has(k.x.id)?'sel':''}" data-act="ccsel" data-id="${k.x.id}" role="checkbox" aria-checked="${S.cc.sel.has(k.x.id)}" tabindex="0">
       <input type="checkbox" ${S.cc.sel.has(k.x.id)?'checked':''} tabindex="-1" aria-hidden="true">
-      <span><b>${esc(k.x.cliente)}</b><span class="small">${k.tipo==='venda'?`Venda ${esc(k.x.doc||'—')} · ${br(k.x.date)} · ${esc(k.x.forma)}`:`Título ${esc(k.x.doc||'—')} · vence ${br(k.x.venc)}`}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span>
+      <span><b>${esc(k.x.cliente)}</b><span class="small">${k.tipo==='venda'?`Venda ${esc(k.x.doc||'—')} · ${br(k.x.date)} · ${esc(k.x.forma)}`:`${esc(titRef(k.x))} · vence ${br(k.x.venc)}`}${k.valorOk?' · mesmo valor':''}${k.ns>=0.5?' · nome confere':''}</span></span>
       <span class="v">${money(k.x.valor)}</span></div>`).join(''):'<div class="empty">Nada encontrado. Pesquise pelo nome do cliente ou pelo valor.</div>'}
   </div>
   <div class="dlg-f"><span class="sumline">Selecionado <b>${money(selTot)}</b> · diferença <b class="${dif===0?'ok':'bad'}">${money(dif)}</b></span><span class="sp"></span>
@@ -901,7 +958,7 @@ function abrirAlvo(id){ S.dlgKind='alvo'; S.alvoId=id;
   const es=D.entradas.filter(e=>e.st!=='ok'&&e.st!=='out').map(e=>({e,valorOk:e.valor===x.valor,ns:nomeScore(x.cliente,e.pagador+' '+e.desc),dd:Math.abs(dayDiff(ref,e.date))}))
     .sort((a,b)=>(b.valorOk-a.valorOk)||(b.ns-a.ns)||(a.dd-b.dd)).slice(0,40);
   const dlg=$('#dlg'); dlg.className='narrow';
-  dlg.innerHTML=`<div class="dlg-h"><div><h3>${esc(x.cliente)} · ${money(x.valor)}</h3><p>${x.col==='vendas'?`Venda ${esc(x.doc||'—')} de ${br(x.date)}`:`Título ${esc(x.doc||'—')}, vence ${br(x.venc)}`}. Escolha a entrada do banco que pagou.</p>${(x.col==='vendas'||x.baixado)?`<p style="margin-top:8px">Forma de recebimento: ${formaCell(x)}</p>`:''}</div><button class="btn sm" data-act="close">Fechar</button></div>
+  dlg.innerHTML=`<div class="dlg-h"><div><h3>${esc(x.cliente)} · ${money(x.valor)}</h3><p>${x.col==='vendas'?`Venda ${esc(x.doc||'—')} de ${br(x.date)}`:`${esc(titRef(x))}, vence ${br(x.venc)}`}. Escolha a entrada do banco que pagou.</p>${(x.col==='vendas'||x.baixado)?`<p style="margin-top:8px">Forma de recebimento: ${formaCell(x)}</p>`:''}</div><button class="btn sm" data-act="close">Fechar</button></div>
   <div class="dlg-b">${es.length?es.map(o=>`<div class="cand" data-act="alvopick" data-e="${o.e.id}" data-id="${x.id}" tabindex="0"><span></span><span><b>${esc(o.e.pagador||o.e.desc)}</b><span class="small">${br(o.e.date)} · ${esc(o.e.forma)}${o.valorOk?' · mesmo valor':''}${o.ns>=0.5?' · nome confere':''} · ${esc(ST[o.e.st][1])}</span></span><span class="v">${money(o.e.valor)}</span></div>`).join(''):'<div class="empty">Nenhuma entrada do banco livre. Importe o extrato do período.</div>'}</div>`;
   if(!dlg.open) dlg.showModal();
 }
@@ -930,7 +987,7 @@ function sugestoes(e,q,sel){
   cands.sort((a,b)=>(sel.has(b.x.id)-sel.has(a.x.id))||(b.score-a.score));
   return cands.slice(0,40);
 }
-function descAlvo(x){ return x.col==='vendas'?`Venda ${x.doc||'—'} · ${brs(x.date)} · ${x.forma}`:x.baixado?`Título ${x.doc||'—'} · baixado ${brs(x.dataBaixa)}`:`Título ${x.doc||'—'} · vence ${brs(x.venc)}`; }
+function descAlvo(x){ return x.col==='vendas'?`Venda ${x.doc||'—'} · ${brs(x.date)} · ${x.forma}`:x.baixado?`${titRef(x)} · baixado ${brs(x.dataBaixa)}`:`${titRef(x)} · vence ${brs(x.venc)}`; }
 function vDia(C){
   const d=S.dia; const dt=new Date(d+'T12:00:00');
   const eD=D.entradas.filter(e=>e.date===d), vD=D.vendas.filter(v=>v.date===d), rD=D.receber.filter(r=>r.baixado&&r.dataBaixa===d);
@@ -1111,12 +1168,13 @@ function lerReceber(L){
     if(r){ if(nome.length){ cli=nome.join(' ').replace(/\s+/g,' ').trim(); nome=[]; }
       const status=r[4], parcial=/PARCIAL/i.test(pnorm(status)), pago=parcial||/PAGO TOTAL|QUITAD|LIQUIDAD/i.test(pnorm(status)), dataPag=r[5]?b2i(r[5]):'';
       const saldo=pMoney(r[9]), vt=pMoney(r[10]), vp=pMoney(r[7]), juros=pMoney(r[8]);
-      const valor=pago?(parcial?vp:(vp||vt))+juros:(saldo||vt);
+      // título pago: vale sempre a coluna "Vlr. Pago" (sem somar juros); em aberto: o saldo a receber
+      const valor=pago?(vp||vt):(saldo||vt);
       const venc=b2i(r[6]);
       // pago parcial: cada pagamento parcial é um registro próprio (título + data + valor pago); guarda o saldo que falta
       const idBase=parcial?`${r[2]}|${r[3]}|${venc}|P|${dataPag}|${vp}`:`${r[2]}|${venc}|${pago?vt:valor}`;
-      it.push({col:'receber',id:'r'+hashStr(idBase),titulo:r[3],doc:r[3],pedido:r[2],emissao:b2i(r[1]),venc,valor,cliente:cli||'Cliente não informado',
-        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:juros?(parcial?vp:(vp||vt)):0,
+      it.push({col:'receber',id:'r'+hashStr(idBase),titulo:r[3],doc:r[2],pedido:r[2],emissao:b2i(r[1]),venc,valor,cliente:cli||'Cliente não informado',
+        baixado:pago,dataBaixa:pago?dataPag:'',status,origem:'contas',juros,valorAlt:pago&&vt&&vt!==valor?vt:0,valorPago:vp,
         parcial,saldo:parcial?saldo:0,valorTit:vt}); continue; }
     const idx=segs.findIndex(s=>/^(Cr[ée]dito|Total)$/i.test(s)); const np=(idx===-1?segs:segs.slice(0,idx)).join(' ').trim();
     if(np&&!/^(Cr[ée]dito|Total|Saldo)/i.test(np)) nome.push(np); }
@@ -1135,17 +1193,20 @@ function deduplicar(){
 async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set(); const coberturas=[]; const datasVenda=[];
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
-  const add=(col,x)=>{ const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; Object.assign(ex,x,col==='entradas'?keep:{}); touch(col,ex); return 0; }
+  let recAntigos=0, recMovidos=0;
+  const add=(col,x)=>{ if(col==='receber'&&x.origem==='contas'){ const k=bizRec(x); const par=D.receber.find(y=>y.origem==='contas'&&bizRec(y)===k);
+      if(par){ if(recTs(par)>recTs(x)){ recAntigos++; return 0; } if(gkey(col,par)!==gkey(col,x)||par.dataBaixa!==x.dataBaixa||par.emissao!==x.emissao) recMovidos++; if(par.id!==x.id){ const o=par.id; x.id=o; } } }
+    const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; const k0=gkey(col,ex); Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)) markDirty(col,k0); touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(rendimento(x)){ x.st='out'; x.motivo='Rendimento de aplicação (Invest Fácil)'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
     try{ const L=await pdfLines(f); const t=tipoPdf(L);
       if(t==='extrato'||t==='bradesco'){ const r=t==='bradesco'?lerBradesco(L):lerExtrato(L); saidas+=r.saidas; if(r.cob){ coberturas.push(r.cob); } const ign=r.items.filter(ignorarEntrada).length; r.items=r.items.filter(x=>!ignorarEntrada(x)); r.saidas+=0; r.ign=ign; r.items.forEach(x=>{ nE+=add('entradas',x); datasExt.add(datas.length); datas.push(x.date); }); res.push(`Extrato ${t==='bradesco'?'Bradesco':'Sicoob'}: ${r.items.length} entrada(s), ${r.saidas} saída(s)${r.ign?` e ${r.ign} Cielo/cheque`:''} ignorada(s)`); }
       else if(t==='vendas'||t==='pedido'){ const r=t==='vendas'?lerVendasRel(L):lerPedidoUnico(L); const {vendas,receber}=pedidosParaItens(r.ped);
-        vendas.forEach(x=>{ nV+=add('vendas',x); datas.push(x.date); datasVenda.push(x.date); }); receber.forEach(x=>{ if(!D.receber.some(y=>y.id===x.id)) nR+=add('receber',x); });
+        const sp=substituirPedidos(vendas,receber,add); nV+=sp.n; sp.aceitas.forEach(x=>{ datas.push(x.date); datasVenda.push(x.date); });
         const tot=sum(r.ped,p=>p.total); const conf=r.meta?(r.meta.n===r.ped.length&&r.meta.total===tot?' (confere com o total do relatório)':` (relatório indica ${r.meta.n} pedidos)`):'';
-        res.push(`Vendas: ${r.ped.length} pedido(s), ${money(tot)}${conf}`); }
+        res.push(`Vendas: ${r.ped.length} pedido(s), ${money(tot)}${conf}${sp.movidos?` · ${sp.movidos} pedido(s) mudaram para a data nova`:''}${sp.antigos?` · ${sp.antigos} pedido(s) ignorados (já existem com data mais recente)`:''}`); }
       else if(t==='receber'){ const items=lerReceber(L); items.forEach(x=>{ nR+=add('receber',x); });
-        const ab=items.filter(x=>!x.baixado); res.push(`Contas a receber: ${ab.length} em aberto${items.length-ab.length?`, ${items.length-ab.length} já baixado(s)`:''}`); }
+        const ab=items.filter(x=>!x.baixado); res.push(`Contas a receber: ${ab.length} em aberto${items.length-ab.length?`, ${items.length-ab.length} já baixado(s)`:''}${recMovidos?` · ${recMovidos} título(s) atualizados para a data nova`:''}${recAntigos?` · ${recAntigos} ignorado(s) (já existem com data mais recente)`:''}`); recMovidos=0; recAntigos=0; }
       else erros.push(f.name);
     }catch(e){ console.error(e); erros.push(f.name); }
   }
@@ -1216,7 +1277,7 @@ function gerarPdf(){
   // diferenças
   const difs=[...C.ni.map(e=>['Entrou sem dono',br(e.date),e.pagador||e.desc.slice(0,40),'—',m(e.valor)]),
     ...C.vendasNaoEntrou.map(v=>['Venda sem entrada no banco',br(v.date),v.cliente,'Venda '+(v.doc||'—'),m(v.valor)]),
-    ...C.baixaNaoEntrou.map(r=>['Baixa Pix sem entrada no banco',br(r.dataBaixa),r.cliente,'Título '+(r.doc||'—'),m(r.valor)]),
+    ...C.baixaNaoEntrou.map(r=>['Baixa Pix sem entrada no banco',br(r.dataBaixa),r.cliente,titRef(r),m(r.valor)]),
     ...C.ok.concat(C.conf).filter(e=>e.links&&e.links.length&&sum(e.links.map(i=>IDX[i]).filter(Boolean))!==e.valor).map(e=>['Valor diferente do documento',br(e.date),clienteDaEntrada(e),(e.links||[]).map(refDe).join(', '),m(e.valor-sum(e.links.map(i=>IDX[i]).filter(Boolean)))])];
   H('Diferenças',`Entradas sem dono ${m(sum(C.ni))} · vendas Pix/transferência sem entrada no banco ${m(sum(C.vendasNaoEntrou))} · títulos atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}, listados em Recebimentos em aberto).`);
   if(difs.length) T({head:[['Tipo','Data','Cliente / pagador','Documento','Valor']],body:difs,columnStyles:{0:{cellWidth:44,fontStyle:'bold',textColor:RD},1:{cellWidth:18},3:{cellWidth:34},4:{halign:'right',cellWidth:24}},didParseCell:d=>{ if(d.section==='head'&&d.column.index===4) d.cell.styles.halign='right'; }});
@@ -1225,7 +1286,7 @@ function gerarPdf(){
   { const sv=[...C.serv.map(e=>[brs(e.date),'Banco · '+e.forma,clienteDaEntrada(e),(e.motivo&&e.motivo!=='Serviço'?e.motivo:'Serviço'),m(e.valor)]),...C.servMan.map(x=>[brs(x.date),'Cadastrado · '+x.forma,x.cliente,x.desc||'Serviço',m(x.valor)])];
     const pp=D.receber.filter(r=>r.parcial&&inP(r.dataBaixa));
     if(pp.length){ H('Títulos pagos parcialmente','Quanto foi pago no período e o saldo que ainda falta receber.');
-      T({head:[['Pagamento','Cliente','Título','Valor do título','Pago','Saldo restante']],body:pp.map(r=>[brs(r.dataBaixa),r.cliente,r.doc||'—',m(r.valorTit),m(r.valor),m(r.saldo)]),
+      T({head:[['Pagamento','Cliente','Pedido (Doc. Nº)','Valor do título','Pago','Saldo restante']],body:pp.map(r=>[brs(r.dataBaixa),r.cliente,titRef(r),m(r.valorTit),m(r.valor),m(r.saldo)]),
         foot:[[{content:`${pp.length} título(s)`,colSpan:3},m(pp.reduce((a,r)=>a+r.valorTit,0)),m(sum(pp)),m(pp.reduce((a,r)=>a+(r.saldo||0),0))]],
         columnStyles:{0:{cellWidth:18},3:{halign:'right'},4:{halign:'right'},5:{halign:'right',fontStyle:'bold',textColor:AM}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index>=3) d.cell.styles.halign='right'; }}); }
     if(sv.length){ H('Recebimentos de serviço','Dinheiro recebido que não é venda de peças.');
@@ -1242,7 +1303,7 @@ function gerarPdf(){
   // a receber
   H('Recebimentos em aberto',`A vencer ${m(sum(C.previstos))} (${C.previstos.length}) · atrasados ${m(sum(C.atrasados))} (${C.atrasados.length}). Posição em ${br(HOJE)}.`);
   const ab=C.abertos.slice().sort((a,b)=>a.venc.localeCompare(b.venc));
-  if(ab.length) T({head:[['Vencimento','Cliente','Documento','Valor','Status']],body:ab.map(r=>[br(r.venc),r.cliente,r.doc||'—',m(r.valor),stCol(r.venc<HOJE?'atraso':'aberto')]),foot:[[{content:`${ab.length} título(s)`,colSpan:3},m(sum(ab)),'']],
+  if(ab.length) T({head:[['Vencimento','Cliente','Documento','Valor','Status']],body:ab.map(r=>[br(r.venc),r.cliente,titRef(r),m(r.valor),stCol(r.venc<HOJE?'atraso':'aberto')]),foot:[[{content:`${ab.length} título(s)`,colSpan:3},m(sum(ab)),'']],
     columnStyles:{0:{cellWidth:20},3:{halign:'right',cellWidth:24},4:{cellWidth:20}},didParseCell:d=>{ if(d.section!=='body'&&d.column.index===3) d.cell.styles.halign='right'; }});
   if(y>255){doc.addPage();y=24;} y+=10; doc.setDrawColor(...INK); doc.setLineWidth(.3);
   [['Conferido por',M],['Visto da gerência',W/2+4]].forEach(([l,x])=>{ doc.line(x,y,x+W/2-M-8,y); doc.setFontSize(8); doc.setTextColor(...MUT); doc.text(l,x,y+4); });
