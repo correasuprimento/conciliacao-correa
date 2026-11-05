@@ -392,12 +392,12 @@ function formaVenda(t,data,venc){
 }
 function pagadorDe(txt){
   let s=String(txt||'').replace(/\s+/g,' ').trim();
-  s=s.replace(/^.*?(Recebimento Pix|REM\.?:|Transfer[êe]ncia Pix|PIX RECEBIDO[^A-Z]*|TED RECEBIDA|DOC RECEBIDO)\s*/i,'');
+  s=s.replace(/^.*?(Recebimento Pix|REMET\.?:?|REM\.?:|Transfer[êe]ncia Pix|PIX RECEBIDO[^A-Z]*|TED RECEBIDA|DOC RECEBIDO)\s*/i,'');
   s=s.replace(/Transfer[êe]ncia Pix.*$/i,'');
   s=s.replace(/^[\d./-]+\s+/,'');
   const cut=s.search(/(\*{3}|\d{2}\.\d{3}|\d{3}\.\d{3}|\d{8,})/);
   if(cut>2) s=s.slice(0,cut);
-  s=s.trim();
+  s=s.trim(); if(/^VALOR DISPON/i.test(s)) return '';
   return s.length>=3?s:'';
 }
 const STOP=new Set('LTDA ME EPP EIRELI SA COMERCIO INDUSTRIA SERVICOS SERVICO DOS DAS DE DA DO E EM PIX RECEBIMENTO TRANSFERENCIA REM CLIENTE BALCAO OUTRA IF CRED TRANSF CONTAS RECEBIDA PAGAMENTO LOJA'.split(' '));
@@ -606,7 +606,17 @@ function apagarDaPagil(){
   for(const eid in AJ.conc){ const a=AJ.conc[eid]; if(a&&a.links&&a.links.some(i=>ids.has(i))){ const l=a.links.filter(i=>!ids.has(i)); gravarAjuste('conc',eid,Object.assign({},a,{links:l,st:l.length||a.st!=='ok'?a.st:'ni',t:new Date().toISOString()})); } }
   reindex(); return fora.length;
 }
+function limparDuplicadosBradesco(){
+  if(AJ.cob['_migr_bradDup']) return 0;
+  const g={}; D.entradas.filter(e=>e.banco==='Bradesco').forEach(e=>{ const k=`${e.date}|${e.doc}|${e.valor}|${norm(e.desc)}`; (g[k]=g[k]||[]).push(e); });
+  const fora=new Set(), mapa={};
+  for(const k in g){ const xs=g[k]; if(xs.length<2) continue; xs.sort((a,b)=>((b.links||[]).length+(b.manual?2:0))-((a.links||[]).length+(a.manual?2:0))); xs.slice(1).forEach(e=>fora.add(e)); }
+  gravarAjuste('cob','_migr_bradDup',{t:new Date().toISOString(),off:true});
+  if(!fora.size) return 0;
+  fora.forEach(e=>touch('entradas',e)); D.entradas=D.entradas.filter(e=>!fora.has(e)); reindex(); return fora.size;
+}
 function limparIgnorados(){
+  const nDup=limparDuplicadosBradesco(); if(nDup) setTimeout(()=>toast(`${nDup} lançamento(s) repetido(s) do Bradesco foram removidos.`,8000),900);
   const nPagil=apagarDaPagil(); if(nPagil&&!S._avisoPagil){ S._avisoPagil=true; setTimeout(()=>toast(`${nPagil} lançamento(s) da Pagil (Doc. Nº 01.…) foram retirados da Correa.`,8000),600); }
   deduplicarPorPedido();
   const fora=D.entradas.filter(ignorarEntrada); if(fora.length){ D.entradas=D.entradas.filter(e=>!ignorarEntrada(e)); fora.forEach(e=>touch('entradas',e)); reindex(); }
@@ -942,6 +952,7 @@ function desenhaConc(){ S.dlgKind='cc';
   S.cc.sel.forEach(sid=>{ if(!cands.some(k=>k.x.id===sid)&&IDX[sid]) cands.unshift({x:IDX[sid],tipo:IDX[sid].col==='vendas'?'venda':'receber',valorOk:IDX[sid].valor===e.valor,ns:0,dd:0,score:99}); });
   cands.sort((a,b)=>(S.cc.sel.has(b.x.id)-S.cc.sel.has(a.x.id))||(b.score-a.score)); cands=cands.slice(0,60);
   const selTot=sum([...S.cc.sel].map(i=>IDX[i]).filter(Boolean)); const dif=e.valor-selTot;
+  const pm=/\b(\d{2}\.\d{6}-[A-Z0-9]+)\b/i.exec(S.cc.q||''); const pedQ=pm?pm[1].toUpperCase():'';
   const dlg=$('#dlg'); dlg.className='';
   dlg.innerHTML=`<div class="dlg-h"><div><h3>Conferir entrada de ${money(e.valor)}</h3><p>${esc(e.desc)}</p></div><div>${stHtml(e.st)}</div></div>
   <div class="dlg-b">
@@ -958,6 +969,7 @@ function desenhaConc(){ S.dlgKind='cc';
     <button class="btn" data-act="ccserv" title="Pagamento de serviço prestado (mão de obra, locação…)">É serviço</button>
     <button class="btn" data-act="ccout" title="Transferência entre contas próprias, estorno, empréstimo etc.">Não é venda</button>
     ${e.st!=='ni'?'<button class="btn danger" data-act="ccni">Marcar não identificado</button>':''}
+    ${pedQ&&!D.receber.some(r=>r.pedido===pedQ)?`<button class="btn" data-act="ccbaixa" data-ped="${esc(pedQ)}" title="O título não está no app: cria o título deste pedido já baixado com esta entrada">Baixar título ${esc(pedQ)}</button>`:''}
     <button class="btn primary" data-act="ccok" ${S.cc.sel.size?'':'disabled'}>Confirmar conciliação</button></div>`;
   if(!dlg.open) dlg.showModal();
   const qi=$('#ccq'); if(qi&&S.cc.focus){ qi.focus(); qi.setSelectionRange(qi.value.length,qi.value.length); S.cc.focus=false; }
@@ -1100,11 +1112,11 @@ function lerExtrato(L){
 // Extrato Bradesco Net Empresa ("Extrato Mensal / Por Período" e "Últimos Lançamentos"): só créditos.
 // Lançamento em 3 linhas (título / data-doc-valor-saldo / detalhe) ou numa linha só (data | título | doc | valor | saldo).
 function lerBradesco(L){
-  const it=[]; let on=false, data=null, ultimo='', cur=null, saidas=0, cobDe=null, cobAte=null;
+  const it=[]; let on=false, data=null, ultimo='', cur=null, saidas=0, cobDe=null, cobAte=null, sec=0;
   const op=L.map(l=>/Data da opera[çc][ãa]o:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(l)).find(Boolean);
   const viu=d=>{ if(!d) return; if(!cobDe||d<cobDe) cobDe=d; if(!cobAte||d>cobAte) cobAte=d; };
   for(const raw of L){ const l=raw.replace(/\s*\|\s*/g,' | ').trim(); let m;
-    if(/^Data \| Lan[çc]amento \| Dcto\..*Saldo/i.test(l)){ on=true; cur=null; ultimo=''; continue; }
+    if(/^Data \| Lan[çc]amento \| Dcto\..*Saldo/i.test(l)){ on=true; cur=null; ultimo=''; sec++; continue; }
     if(/^(Lan[çc]amentos Futuros|Saldos Invest|Os dados acima)/i.test(l)){ on=false; cur=null; continue; }
     if(!on) continue;
     if((m=/^(\d{2}\/\d{2}\/\d{4}) \| SALDO ANTERIOR/i.exec(l))){ viu(addDays(b2i(m[1]),1)); cur=null; ultimo=''; continue; }
@@ -1113,13 +1125,14 @@ function lerBradesco(L){
     if(m){ if(m[1]){ data=b2i(m[1]); viu(data); } const v=pMoney(m[4]); const inline=!!m[2];
       const hist=inline?m[2].replace(/ \| /g,' '):ultimo; ultimo='';
       if(v<0||!data){ saidas++; cur=inline?null:{skip:true,temDet:false}; continue; }
-      cur={date:data,doc:m[3],hist,det:'',valor:v,temDet:inline}; it.push(cur); if(inline) cur=null; continue; }
+      cur={date:data,doc:m[3],hist,det:'',valor:v,temDet:inline,sec}; it.push(cur); if(inline) cur=null; continue; }
     if(cur&&!cur.temDet){ if(!cur.skip) cur.det=l.replace(/ \| /g,' '); cur.temDet=true; cur=null; continue; }
     ultimo=l.replace(/ \| /g,' '); cur=null;
   }
   if(op){ const d=b2i(op[1]); if(!cobAte||d>cobAte) cobAte=d; }
-  const seen={};
-  return {saidas,cob:cobDe?{banco:'Bradesco',de:cobDe,ate:cobAte}:null,items:it.map(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; seen[base]=(seen[base]||0)+1;
+  // o PDF mensal traz o período e os "Últimos Lançamentos": o mesmo lançamento nas duas tabelas vale uma vez só
+  const seen={}, porSec={}; const unicos=it.filter(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; const ks=base+'@'+x.sec; porSec[ks]=(porSec[ks]||0)+1; if(porSec[ks]<=(seen[base]||0)) return false; seen[base]=porSec[ks]; x._n=porSec[ks]; return true; });
+  return {saidas,cob:cobDe?{banco:'Bradesco',de:cobDe,ate:cobAte}:null,items:unicos.map(x=>{ const base=`bradesco|${x.date}|${x.doc}|${x.valor}`; seen[base]=x._n;
     const det=x.det.replace(/\s\d{2}\/\d{2}$/,'');
     return {col:'entradas',id:'b'+hashStr(base+'#'+seen[base]),banco:'Bradesco',date:x.date,valor:x.valor,desc:(x.hist+(det?' · '+det:'')).trim(),pagador:pagadorDe(det||x.hist),doc:x.doc,forma:formaEntrada(x.hist+' '+det)}; })};
 }
@@ -1239,7 +1252,8 @@ async function importarPdfs(files){
   reindex(); const res=[]; const erros=[]; let nE=0,nV=0,nR=0,saidas=0; const datas=[]; const datasExt=new Set(); const coberturas=[]; const datasVenda=[];
   $('#app').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-top:20px" id="lendo">Lendo os PDFs…</div>');
   let recAntigos=0, recMovidos=0;
-  const add=(col,x)=>{ if(col==='receber'&&x.origem==='contas'){ const k=bizRec(x); const par=D.receber.find(y=>y.origem==='contas'&&bizRec(y)===k);
+  const add=(col,x)=>{ if(col==='receber'&&x.origem==='contas'&&x.baixado){ const man=D.receber.find(y=>y.origem==='manual'&&y.pedido&&y.pedido===x.pedido&&(y.valor===x.valor||D.receber.filter(z=>z.origem==='manual'&&z.pedido===x.pedido).length===1)); if(man&&!D.receber.some(y=>y.origem==='contas'&&bizRec(y)===bizRec(x))){ const i=D.receber.indexOf(man); x.id=man.id; touch(col,man); D.receber.splice(i,1); delete IDX[man.id]; } }
+    if(col==='receber'&&x.origem==='contas'){ const k=bizRec(x); const par=D.receber.find(y=>y.origem==='contas'&&bizRec(y)===k);
       if(par){ if(recTs(par)>recTs(x)){ recAntigos++; return 0; } if(gkey(col,par)!==gkey(col,x)||par.dataBaixa!==x.dataBaixa||par.emissao!==x.emissao) recMovidos++; if(par.id!==x.id){ const o=par.id; x.id=o; } } }
     const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; const k0=gkey(col,ex); Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)) markDirty(col,k0); touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(rendimento(x)){ x.st='out'; x.motivo='Rendimento de aplicação (Invest Fácil)'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
@@ -1417,6 +1431,14 @@ document.addEventListener('click',async ev=>{
       if(antigo&&antigo!==dt) markDirty('servicos',antigo); touch('servicos',x); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(x.id); toast('Serviço salvo.'); break; }
     case 'servdel': { const x=IDX[id]; if(!x||!confirm('Excluir este serviço?')) break; D.servicos=D.servicos.filter(y=>y.id!==id); markDirty('servicos',x.date); reindex(); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(); break; }
     case 'ccout': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[]; e.st='out'; e.manual=true; e.motivo='Marcado como outra entrada (não é venda)'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); agendarConciliacao(); break; }
+    case 'ccbaixa': { const e=IDX[S.cc.id]; const ped=t.dataset.ped; if(!e||!ped) break;
+      if(/^01\./.test(ped)){ toast('Esse número é de pedido da Pagil (01.…).'); break; }
+      const v=D.vendas.find(x=>x.pedido===ped);
+      const r={col:'receber',id:'rm'+hashStr('baixa|'+ped+'|'+e.id),origem:'manual',pedido:ped,doc:ped,titulo:'',cliente:(v&&v.cliente)||pagadorDe(e.pagador)||e.pagador||'Cliente não informado',
+        valor:e.valor,valorTit:e.valor,venc:e.date,emissao:(v&&v.date)||e.date,baixado:true,dataBaixa:e.date,formaRec:e.forma==='Cartão'?'':e.forma,status:'Baixado pelo banco'};
+      D.receber.push(r); IDX[r.id]=r; touch('receber',r);
+      e.cielo=false; e.links=[r.id]; e.st='ok'; e.auto=false; e.manual=true; e.motivo=`Baixa do título do pedido ${ped}`; touch('entradas',e); salvarConc(e);
+      S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); toast(`Título do pedido ${ped} baixado com ${money(e.valor)}.`); break; }
     case 'ccni': { const e=IDX[S.cc.id]; e.cielo=false; e.links=[]; e.st='ni'; e.manual=true; e.motivo='Marcado manualmente'; touch('entradas',e); salvarConc(e); S._noRender=true; $('#dlg').close(); S._noRender=false; refresh(e.id); break; }
     case 'auto': { D.entradas.forEach(e=>{ if(e.st!=='ok'||e.auto){ if(!e.manual){ e.st='ni'; e.links=[]; } } }); const r=conciliarAuto(); render(); toast(`Conciliação: 🟢 ${r.ok||0} · 🟡 ${r.conf||0} · 🔴 ${r.ni||0}.`); break; }
     case 'pick': $('#fileInput').click(); break;
