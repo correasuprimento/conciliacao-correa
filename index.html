@@ -299,9 +299,13 @@ function deduplicarPorPedido(){
   // títulos gerados pelo Listar Pedido (a prazo): ficam os da versão mais recente do pedido
   const gr=grupo(D.receber.filter(r=>r.origem==='venda'&&r.pedido),r=>r.pedido);
   for(const p in gr){ const xs=gr[p]; const max=xs.reduce((a,r)=>(r.emissao||'')>a?(r.emissao||''):a,''); xs.forEach(r=>{ if((r.emissao||'')!==max){ fora.add(r); mapa[r.id]=(xs.find(y=>(y.emissao||'')===max)||{}).id; } }); }
+  // título previsto pelo Listar Pedido dá lugar ao título do Contas a Receber do mesmo pedido (mesmo valor ou parcela única)
+  const cPorPed={}; D.receber.filter(r=>r.origem==='contas'&&r.pedido).forEach(r=>{ (cPorPed[r.pedido]=cPorPed[r.pedido]||[]).push(r); });
+  D.receber.filter(r=>r.origem==='venda'&&r.pedido&&cPorPed[r.pedido]&&!fora.has(r)).forEach(r=>{ const cs=cPorPed[r.pedido]; const vs=D.receber.filter(y=>y.origem==='venda'&&y.pedido===r.pedido);
+    const par=cs.find(c=>c.valor===r.valor||c.valorTit===r.valor||c.valorAlt===r.valor)||(cs.length===1&&vs.length===1?cs[0]:null); if(par){ fora.add(r); mapa[r.id]=par.id; } });
   // títulos do Contas a Receber: Doc. Nº + parcela, fica o mais recente
   const gc=grupo(D.receber.filter(r=>r.origem==='contas'),bizRec);
-  for(const k in gc){ const xs=gc[k]; if(xs.length<2) continue; xs.sort((a,b)=>recTs(b).localeCompare(recTs(a))); const fica=xs[0];
+  for(const k in gc){ const xs=gc[k]; if(xs.length<2) continue; xs.sort((a,b)=>(a.emissao&&b.emissao)?recTs(b).localeCompare(recTs(a)):((b.dataBaixa||'').localeCompare(a.dataBaixa||'')||((b.emissao?0:1)-(a.emissao?0:1)))); const fica=xs[0];
     xs.slice(1).forEach(r=>{ fora.add(r); if(r.id!==fica.id) mapa[r.id]=fica.id; }); }
   if(!fora.size) return 0;
   fora.forEach(x=>touch(x.col,x));
@@ -320,7 +324,8 @@ function substituirPedidos(vendas,receber,add){
     const exMax=ex.reduce((a,v)=>v.date>a?v.date:a,'');
     if(exMax&&exMax>nd){ antigos++; continue; }
     if(ex.some(v=>v.date!==nd)) movidos++;
-    const exR=D.receber.filter(r=>r.origem==='venda'&&r.pedido===p);
+    const idsRecNovos=new Set(receber.filter(r=>r.pedido===p).map(r=>r.id));
+    const exR=D.receber.filter(r=>r.origem==='venda'&&r.pedido===p&&(r.venc>=HOJE||idsRecNovos.has(r.id)));
     const idsNovos=new Set(novas.map(v=>v.id));
     ex.forEach(v=>{ if(!idsNovos.has(v.id)) mapa[v.id]=novas[0].id; });
     [...ex,...exR].forEach(x=>{ touch(x.col,x); delete IDX[x.id]; });
@@ -653,6 +658,11 @@ function conciliarAuto(){
   pares.sort((a,b)=>(b.k.ns-a.k.ns)||(Math.abs(a.k.dd)-Math.abs(b.k.dd)));
   for(const {e,k} of pares){ if(usados.has(k.x.id)||e.st==='ok') continue;
     e.st='ok'; e.auto=true; e.links=[k.x.id]; e.motivo='Valor, cliente e data conferem'; usados.add(k.x.id); }
+  // liquidação de cobrança: o banco credita vários boletos (de clientes diferentes) num valor só
+  for(const e of pend){ if(e.st==='ok'||!/LIQUIDACAO|COBRANCA/.test(norm(e.desc))) continue;
+    const bs=D.receber.filter(r=>r.baixado&&r.formaRec==='Boleto'&&!usados.has(r.id)&&!(LI[r.id]&&LI[r.id].e!==e)&&r.valor<=e.valor).map(r=>({x:r,dd:dayDiff(r.dataBaixa||r.venc,e.date)})).filter(k=>k.dd>=-2&&k.dd<=5).sort((a,b)=>Math.abs(a.dd)-Math.abs(b.dd)).slice(0,12);
+    const um=bs.find(k=>k.x.valor===e.valor); const hit=um?[um]:subsetSum(bs,e.valor);
+    if(hit){ e.st='ok'; e.auto=true; e.links=hit.map(k=>k.x.id); e.motivo=hit.length>1?`Liquidação de ${hit.length} boletos`:'Liquidação do boleto'; hit.forEach(k=>usados.add(k.x.id)); } }
   // grupos: vários títulos/vendas do mesmo cliente pagos num único valor
   for(const e of pend){ if(e.st==='ok'||e.forma==='Cartão') continue;
     const c=candidatos(e,{}).filter(k=>!usados.has(k.x.id)&&k.ns>=0.5&&k.x.valor<e.valor);
@@ -1205,7 +1215,36 @@ function pedidosParaItens(ped){
   return {vendas,receber};
 }
 // Contas a Receber (CGI): títulos em aberto ou já baixados
+// Contas a Receber - Recebidos - Por Data de Pagamento (ListarCtsReceberPagoAgrupDataPagto)
+function formaDoRecebimento(t){ const c=pnorm(t); if(/PIX/.test(c)) return 'Pix'; if(/DINHEIRO|ESPECIE/.test(c)) return 'Dinheiro'; if(/CART|DEBITO|CREDITO/.test(c)) return 'Cartão';
+  if(/CHEQUE/.test(c)) return 'Cheque'; if(/REMESSA|RETORNO|BOLETO|COBRANCA/.test(c)) return 'Boleto'; if(/TRANSF|TED|DOC|DEPOSITO/.test(c)) return 'Transferência'; return ''; }
+function lerReceberPagos(L){
+  const it=[]; let dataPag='', cur=null;
+  const num=v=>{ const m=/^([\d.]+),(\d+)$/.exec(v); return m?Math.round(parseFloat(m[1].replace(/\./g,'')+'.'+m[2])*100):null; };
+  for(const raw of L){ const segs=raw.split(' | ').map(x=>x.trim()).filter(Boolean); const l=segs.join(' '); let m;
+    if((m=/^Pagamento\.*:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(l))){ dataPag=b2i(m[1]); cur=null; continue; }
+    if(/^(T[íi]tulos|Totais|Doc\. N|Contas a Receber|Filtros|ListarCts|CORREA AUTO PECAS$|PAGIL)/i.test(l)){ cur=null; continue; }
+    const n=segs.length;
+    if(dataPag&&n>=6&&num(segs[n-1])!=null&&num(segs[n-2])!=null&&num(segs[n-3])!=null&&/^\d{2}\/\d{2}\/\d{4}$/.test(segs[n-4])){
+      const doc=segs[0], forma=segs[n-5], meio=segs.slice(1,n-5);
+      const obs=meio.filter(x=>/^(PEDIDO|NOTA|NF|OBS)/i.test(x)); const cli=meio.filter(x=>!obs.includes(x)).join(' ');
+      const saldo=num(segs[n-3]), vpTot=num(segs[n-2]), vp=num(segs[n-1]);
+      cur={doc,cliente:cli,obs:obs.join(' '),formaTxt:forma,venc:b2i(segs[n-4]),saldo,vpTot,vp,dataPag}; it.push(cur); continue; }
+    // continuação na linha de baixo: resto do nome do cliente ou a observação ("PEDIDO 02.004763-A")
+    if(cur&&segs.length===1&&/[A-Za-zÀ-ú]{2}/.test(l)){ if(/^(PEDIDO|NOTA|NF|OBS)/i.test(l)) cur.obs=(cur.obs+' '+l).trim(); else cur.cliente=(cur.cliente+' '+l).trim(); continue; }
+  }
+  // mesmo documento com mais de uma parcela paga no relatório: numera pela data de vencimento
+  const porDoc={}; it.forEach(x=>{ (porDoc[x.doc]=porDoc[x.doc]||[]).push(x); });
+  Object.values(porDoc).forEach(xs=>{ if(xs.length>1) xs.slice().sort((a,b)=>a.venc.localeCompare(b.venc)).forEach((x,i)=>x.parc=String(i+1).padStart(3,'0')); });
+  return it.map(x=>{ const parcial=x.saldo>0; const pedObs=/(\d{2}\.\d{6}-[A-Z0-9]+)/i.exec(x.obs||'');
+    const ped=/^\d{2}\.\d{6}-/.test(x.doc)?x.doc:(pedObs?pedObs[1].toUpperCase():x.doc);
+    const idBase=parcial?`${ped}|${x.parc||''}|P|${x.dataPag}|${x.vp}`:`${ped}|${x.venc}|${x.vpTot}`;
+    return {col:'receber',id:'r'+hashStr(idBase),titulo:x.parc?`${ped}-${x.parc}`:'',doc:ped,pedido:ped,emissao:'',venc:x.venc,valor:x.vp,cliente:x.cliente||'Cliente não informado',
+      baixado:true,dataBaixa:x.dataPag,status:parcial?'Pago Parcial':'Pago Total',origem:'contas',juros:0,valorAlt:x.vpTot&&x.vpTot!==x.vp&&!parcial?x.vpTot:0,valorPago:x.vp,
+      parcial,saldo:parcial?x.saldo:0,valorTit:x.vpTot+(parcial?x.saldo:0),formaRec:formaDoRecebimento(x.formaTxt),formaTxt:x.formaTxt,obs:x.obs}; });
+}
 function lerReceber(L){
+  if(/Recebidos - Por Data de Pagamento|ListarCtsReceberPagoAgrupDataPagto/i.test(L.slice(0,4).join(' ')+' '+L.slice(-3).join(' '))) return lerReceberPagos(L);
   const it=[]; let nome=[], cli='';
   for(const raw of L){ const segs=raw.split(' | ').map(s=>s.trim()); const l=segs.join(' ');
     if(/^(ListarCts|Contas a Receber|Filtros:|Emiss[ãa]o Doc)/i.test(l)) continue;
@@ -1275,7 +1314,8 @@ async function importarPdfs(files){
   let recAntigos=0, recMovidos=0;
   const add=(col,x)=>{ if(col==='receber'&&x.origem==='contas'&&x.baixado){ const man=D.receber.find(y=>y.origem==='manual'&&y.pedido&&y.pedido===x.pedido&&(y.valor===x.valor||D.receber.filter(z=>z.origem==='manual'&&z.pedido===x.pedido).length===1)); if(man&&!D.receber.some(y=>y.origem==='contas'&&bizRec(y)===bizRec(x))){ const i=D.receber.indexOf(man); x.id=man.id; touch(col,man); D.receber.splice(i,1); delete IDX[man.id]; } }
     if(col==='receber'&&x.origem==='contas'){ const k=bizRec(x); const par=D.receber.find(y=>y.origem==='contas'&&bizRec(y)===k);
-      if(par){ if(recTs(par)>recTs(x)){ recAntigos++; return 0; } if(gkey(col,par)!==gkey(col,x)||par.dataBaixa!==x.dataBaixa||par.emissao!==x.emissao) recMovidos++; if(par.id!==x.id){ const o=par.id; x.id=o; } } }
+      if(par){ const velho=(par.emissao&&x.emissao)?recTs(par)>recTs(x):(par.dataBaixa||'')>(x.dataBaixa||''); if(velho){ recAntigos++; return 0; }
+        x.emissao=x.emissao||par.emissao||''; x.titulo=x.titulo||par.titulo||''; if(AJ.formas[par.id]) delete x.formaRec; if(gkey(col,par)!==gkey(col,x)||par.dataBaixa!==x.dataBaixa||par.emissao!==x.emissao) recMovidos++; if(par.id!==x.id){ const o=par.id; x.id=o; } } }
     const ex=IDX[x.id]; if(ex&&ex.col===col){ const keep={st:ex.st,links:ex.links,auto:ex.auto,manual:ex.manual,motivo:ex.motivo}; const k0=gkey(col,ex); Object.assign(ex,x,col==='entradas'?keep:{}); if(k0!==gkey(col,ex)) markDirty(col,k0); touch(col,ex); return 0; }
     if(col==='entradas'){ x.st='ni'; x.links=[]; if(contaPropria(x)){ x.st='out'; x.motivo='Transferência entre contas da Correa'; } else if(rendimento(x)){ x.st='out'; x.motivo='Rendimento de aplicação (Invest Fácil)'; } else if(ehCielo(x)) marcarCielo(x); } D[col].push(x); IDX[x.id]=x; touch(col,x); return 1; };
   for(const f of files){
