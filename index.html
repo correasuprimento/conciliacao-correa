@@ -630,7 +630,23 @@ function limparDuplicadosBradesco(){
   if(!fora.size) return 0;
   fora.forEach(e=>touch('entradas',e)); D.entradas=D.entradas.filter(e=>!fora.has(e)); reindex(); return fora.size;
 }
+// assinatura do formato do lançamento (ex.: "PIX RECEBIDO - OUTRA IF" x "PIX RECEB.OUTRA IF") e chave do pagador
+const sigEntrada=e=>norm(e.desc||'').replace(/[^A-Z]/g,'').slice(0,10);
+const chavePagador=e=>{ const t=toks(e.pagador||pagadorDe(e.desc)||''); return t.slice(0,2).join(' '); };
+function deduplicarSicoob(){
+  const g={}; D.entradas.filter(e=>(e.banco||'Sicoob')==='Sicoob').forEach(e=>{ const k=`${e.date}|${e.valor}|${chavePagador(e)}`; (g[k]=g[k]||[]).push(e); });
+  const fora=new Set();
+  for(const k in g){ const xs=g[k]; if(xs.length<2) continue;
+    const porSig={}; xs.forEach(e=>{ (porSig[sigEntrada(e)]=porSig[sigEntrada(e)]||[]).push(e); });
+    const sigs=Object.keys(porSig); if(sigs.length<2) continue;   // mesmo formato = pagamentos diferentes de verdade
+    const quantos=Math.max(...sigs.map(x=>porSig[x].length));
+    const ord=xs.slice().sort((a,b)=>((b.manual?4:0)+((b.links||[]).length?2:0)+(b.st==='ok'?1:0))-((a.manual?4:0)+((a.links||[]).length?2:0)+(a.st==='ok'?1:0)));
+    ord.slice(quantos).forEach(e=>fora.add(e)); }
+  if(!fora.size) return 0;
+  fora.forEach(e=>touch('entradas',e)); D.entradas=D.entradas.filter(e=>!fora.has(e)); reindex(); return fora.size;
+}
 function limparIgnorados(){
+  const nSic=deduplicarSicoob(); if(nSic) setTimeout(()=>toast(`${nSic} entrada(s) repetida(s) do Sicoob (mesmo PIX em dois PDFs) foram removidas.`,8000),1200);
   D.vendas.forEach(v=>{ if(/R\$|\b(Romaneio|Faturado)\b/.test(v.cliente||'')){ v.cliente=limparCliente(v.cliente)||'Cliente não informado'; touch('vendas',v); } });
   const nDup=limparDuplicadosBradesco(); if(nDup) setTimeout(()=>toast(`${nDup} lançamento(s) repetido(s) do Bradesco foram removidos.`,8000),900);
   const nPagil=apagarDaPagil(); if(nPagil&&!S._avisoPagil){ S._avisoPagil=true; setTimeout(()=>toast(`${nPagil} lançamento(s) da Pagil (Doc. Nº 01.…) foram retirados da Correa.`,8000),600); }
@@ -1124,7 +1140,7 @@ function lerExtrato(L){
       cur={date,doc,hist,det:'',valor:pMoney(m[4])}; it.push(cur); continue; }
     const dm=/^DOC\.?:\s*(.+)$/i.exec(l);
     if(dm){ if(cur&&!cur.skip&&!cur.doc) cur.doc=dm[1].trim(); continue; }
-    if(cur&&!cur.skip) cur.det=(cur.det?cur.det+' ':'')+l.replace(/ \| /g,' ');
+    if(cur&&!cur.skip){ const t=l.replace(/ \| /g,' ').replace(/\s+R?\$?\s*\d{1,3}(\.\d{3})*,\d{0,2}[CD]?\*?$/,'').trim(); if(t&&!/^[\d.,\s]+[CD]?\*?$/.test(t)) cur.det=(cur.det?cur.det+' ':'')+t; }
   }
   const seen={}; const pi=L.map(l=>/Per[ií]odo:.*?(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})/i.exec(l.replace(/\|/g,' '))).find(Boolean);
   return {saidas,cob:pi?{banco:'Sicoob',de:b2i(pi[1]),ate:b2i(pi[2])}:null,items:it.map(x=>{ const base=`${x.date}|${x.doc}|${x.valor}|${pnorm(x.det).slice(0,60)}`; seen[base]=(seen[base]||0)+1;
